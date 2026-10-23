@@ -1,0 +1,23 @@
+# Private context (not pushed to public repo)
+rdsync/
+.claude/
+CLAUDE.md
+
+# macOS
+.DS_Store
+
+# Build artifacts
+build/
+*.o
+*.a
+
+# Downloaded source archives
+*.tar.gz
+*.tar.xz
+
+# Wine build temporaries
+*.pyc
+__pycache__/
+
+# Baseline checksums (may contain paths)
+baseline.sha256
