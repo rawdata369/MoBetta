@@ -23,9 +23,9 @@ MoBetta patches Wine's signal handler to emulate the rejected instructions, allo
 
 🚧 **In Development**
 
-- [ ] Phase 1: Confirm faulting instructions
-- [ ] Phase 2: Reproducible engine build
-- [ ] Phase 3: Implement instruction emulation
+- [x] Phase 1: Confirm faulting instructions
+- [x] Phase 2: Reproducible engine build
+- [x] Phase 3: Implement instruction emulation (unit-tested; in-game test pending)
 - [ ] Phase 4: Testing
 
 ## Target Environment

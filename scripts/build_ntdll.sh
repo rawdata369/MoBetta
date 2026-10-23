@@ -2,7 +2,7 @@
 # MoBetta - Build x86_64 ntdll.so from CrossOver 26.3.0 source
 #
 # Cross-compiles natively on Apple Silicon (no Rosetta toolchain, no x86_64 Homebrew).
-# Output: build/out/ntdll.so (stripped)
+# Applies patches/*.patch in order. Output: build/out/ntdll.so (stripped)
 #
 # Requires: Xcode Command Line Tools, ARM Homebrew bison (>= 3.0), gh CLI
 # Usage: bash scripts/build_ntdll.sh [--clean]
@@ -47,6 +47,22 @@ fi
 verify_sha256 "$SRC/$CX_TARBALL" "$CX_SHA256"
 if [ ! -d "$SRC/sources/wine" ]; then
     tar -xzf "$SRC/$CX_TARBALL" -C "$SRC"
+fi
+
+# MoBetta patches: when the set changes, restore pristine copies of every file
+# the old and new sets touch, then apply the new set in order
+PATCH_STAMP="$SRC/.mobetta-patches"
+PATCHES_SHA256=$(cat "$ROOT"/patches/*.patch | shasum -a 256 | awk '{print $1}')
+if [ "$(head -1 "$PATCH_STAMP" 2>/dev/null)" != "$PATCHES_SHA256" ]; then
+    patched_files=$(grep -h '^+++ b/' "$ROOT"/patches/*.patch | cut -c7- | sort -u)
+    for f in $( (tail -n +2 "$PATCH_STAMP" 2>/dev/null; echo "$patched_files") | sort -u); do
+        tar -xzf "$SRC/$CX_TARBALL" -C "$SRC" "sources/wine/$f"
+        touch "$SRC/sources/wine/$f"
+    done
+    for p in "$ROOT"/patches/*.patch; do
+        patch -p1 -s -d "$SRC/sources/wine" < "$p"
+    done
+    { echo "$PATCHES_SHA256"; echo "$patched_files"; } > "$PATCH_STAMP"
 fi
 
 # PE cross compiler (Apple's Command Line Tools are arm64-only, so no Rosetta toolchain)

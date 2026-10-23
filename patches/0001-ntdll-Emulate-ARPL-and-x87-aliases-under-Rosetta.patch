@@ -1,0 +1,201 @@
+MoBetta: ntdll: Emulate ARPL and undocumented x87 aliases under Rosetta.
+
+Rosetta 2 raises an illegal instruction for ARPL (63 /r) in 32-bit code and
+for the undocumented x87 register aliases (DC D0+i, DC D8+i, DE D0+i, DD C8+i,
+DF C8+i, D9 D8+i, DF D0+i, DF D8+i, DF C0+i), all of which run on x86 hardware.
+WoW 3.3.5a's Warden module uses ARPL and crashes at character select.
+
+Tests: scripts/test_emu.sh
+
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2030,8 +2030,179 @@
+ 
+     RIP_sig(sigcontext) += 3;
+     TRACE_(seh)( "emulated an XGETBV instruction\n" );
++    return TRUE;
++}
++
++/* MOBETTA BEGIN emulation */
++
++/***********************************************************************
++ *           get_gpr_sig
++ *
++ * Return the general purpose register with the given ModRM encoding (0-7).
++ */
++static inline ULONG64 *get_gpr_sig( ucontext_t *sigcontext, unsigned int reg )
++{
++    switch (reg)
++    {
++    case 0: return (ULONG64 *)&RAX_sig(sigcontext);
++    case 1: return (ULONG64 *)&RCX_sig(sigcontext);
++    case 2: return (ULONG64 *)&RDX_sig(sigcontext);
++    case 3: return (ULONG64 *)&RBX_sig(sigcontext);
++    case 4: return (ULONG64 *)&RSP_sig(sigcontext);
++    case 5: return (ULONG64 *)&RBP_sig(sigcontext);
++    case 6: return (ULONG64 *)&RSI_sig(sigcontext);
++    default: return (ULONG64 *)&RDI_sig(sigcontext);
++    }
++}
++
++/***********************************************************************
++ *           emulate_arpl
++ *
++ * Check if the fault location is an ARPL instruction in 32-bit code and
++ * emulate it if so. Rosetta rejects ARPL; in 64-bit code the same opcode
++ * is MOVSXD, which Rosetta handles, so only 32-bit code gets here.
++ * MOBETTA HACK
++ */
++static inline BOOL emulate_arpl( ucontext_t *sigcontext, CONTEXT *context )
++{
++    BYTE instr[16];
++    unsigned int i, len, mod, rm;
++    DWORD addr = 0;
++    WORD src, dst;
++
++    if (CS_sig(sigcontext) != cs32_sel) return FALSE;
++    len = virtual_uninterrupted_read_memory( (BYTE *)context->Rip, instr, sizeof(instr) );
++
++    /* prefixes that don't change ARPL in flat 32-bit code; %fs:, %gs:, addr size and lock are not handled */
++    for (i = 0; i < len; i++)
++        if (instr[i] != 0x26 && instr[i] != 0x2e && instr[i] != 0x36 && instr[i] != 0x3e &&
++            instr[i] != 0x66 && instr[i] != 0xf2 && instr[i] != 0xf3) break;
++    if (i + 2 > len || instr[i] != 0x63) return FALSE;
++
++    mod = instr[i + 1] >> 6;
++    rm = instr[i + 1] & 7;
++    src = *get_gpr_sig( sigcontext, (instr[i + 1] >> 3) & 7 );
++    i += 2;
++
++    if (mod == 3)
++        dst = *get_gpr_sig( sigcontext, rm );
++    else
++    {
++        unsigned int disp_size = mod == 1 ? 1 : mod == 2 ? 4 : 0;
++
++        if (rm == 4)  /* SIB byte */
++        {
++            BYTE sib;
++
++            if (i >= len) return FALSE;
++            sib = instr[i++];
++            if (((sib >> 3) & 7) != 4) addr = (DWORD)*get_gpr_sig( sigcontext, (sib >> 3) & 7 ) << (sib >> 6);
++            rm = sib & 7;
++        }
++        if (mod == 0 && rm == 5) disp_size = 4;  /* disp32, no base */
++        else addr += (DWORD)*get_gpr_sig( sigcontext, rm );
++
++        if (i + disp_size > len) return FALSE;
++        if (disp_size == 1) addr += (signed char)instr[i];
++        else if (disp_size == 4)
++        {
++            DWORD disp;
++            memcpy( &disp, instr + i, sizeof(disp) );
++            addr += disp;
++        }
++        i += disp_size;
++        if (virtual_uninterrupted_read_memory( (void *)(ULONG_PTR)addr, &dst, sizeof(dst) ) != sizeof(dst))
++            return FALSE;
++    }
++    if (i > 15) return FALSE;
++
++    if ((dst & 3) < (src & 3))
++    {
++        dst = (dst & ~3) | (src & 3);
++        if (mod == 3) *(WORD *)get_gpr_sig( sigcontext, rm ) = dst;
++        else if (virtual_uninterrupted_write_memory( (void *)(ULONG_PTR)addr, &dst, sizeof(dst) )) return FALSE;
++        EFL_sig(sigcontext) |= 0x40;  /* ZF */
++    }
++    else EFL_sig(sigcontext) &= ~0x40;
++
++    RIP_sig(sigcontext) += i;
++    TRACE_(seh)( "emulated an ARPL instruction\n" );
++    return TRUE;
++}
++
++/* run x87 instructions on the given fxsave state, keeping our own fpu/sse state */
++#define X87_RUN(ops) \
++    __asm__ volatile( "fxsave %0\n\tfxrstor %1\n\t" ops "\n\tfxsave %1\n\tfxrstor %0" : "=m" (saved), "+m" (state) )
++
++/* the eight ST(i) forms of an alias opcode */
++#define X87_CASES(opcode, insn, post) \
++    case (opcode) + 0: X87_RUN( insn "(0)" post ); break; \
++    case (opcode) + 1: X87_RUN( insn "(1)" post ); break; \
++    case (opcode) + 2: X87_RUN( insn "(2)" post ); break; \
++    case (opcode) + 3: X87_RUN( insn "(3)" post ); break; \
++    case (opcode) + 4: X87_RUN( insn "(4)" post ); break; \
++    case (opcode) + 5: X87_RUN( insn "(5)" post ); break; \
++    case (opcode) + 6: X87_RUN( insn "(6)" post ); break; \
++    case (opcode) + 7: X87_RUN( insn "(7)" post ); break;
++
++/***********************************************************************
++ *           emulate_x87_alias
++ *
++ * Check if the fault location is an undocumented alias of an x87 register
++ * instruction (e.g. DC D8+i for FCOMP ST(i)) and emulate it if so. x86
++ * hardware accepts these, Rosetta rejects them. The documented instruction
++ * runs on the faulting thread's x87 state, so the alias gives exactly what
++ * Rosetta gives for the documented form.
++ * MOBETTA HACK
++ */
++static inline BOOL emulate_x87_alias( ucontext_t *sigcontext, CONTEXT *context )
++{
++    XMM_SAVE_AREA32 DECLSPEC_ALIGN(16) saved;
++    XMM_SAVE_AREA32 DECLSPEC_ALIGN(16) state;
++    XMM_SAVE_AREA32 *fpu = FPU_sig( sigcontext );
++    BYTE instr[2];
++    unsigned int i, top;
++
++    if (!fpu || virtual_uninterrupted_read_memory( (BYTE *)context->Rip, instr, sizeof(instr) ) < sizeof(instr))
++        return FALSE;
++
++    memcpy( &state, fpu, sizeof(state) );
++    /* Rosetta signal contexts hold the x87 registers in physical order, fxsave uses stack order */
++    top = (fpu->StatusWord >> 11) & 7;
++    if (is_rosetta2)
++        for (i = 0; i < 8; i++) state.FloatRegisters[i] = fpu->FloatRegisters[(top + i) & 7];
++    /* mxcsr in Rosetta signal contexts is wrong (CW Hack 24256), keep the live value */
++    __asm__ volatile( "stmxcsr %0" : "=m" (state.MxCsr) );
++
++    switch (instr[0] << 8 | instr[1])
++    {
++    X87_CASES( 0xdcd0, "fcom %%st", "" )   /* FCOM2 */
++    X87_CASES( 0xdcd8, "fcomp %%st", "" )  /* FCOMP3 */
++    X87_CASES( 0xded0, "fcomp %%st", "" )  /* FCOMP5 */
++    X87_CASES( 0xddc8, "fxch %%st", "" )   /* FXCH4 */
++    X87_CASES( 0xdfc8, "fxch %%st", "" )   /* FXCH7 */
++    X87_CASES( 0xd9d8, "fstp %%st", "" )   /* FSTP1 */
++    X87_CASES( 0xdfd0, "fstp %%st", "" )   /* FSTP8 */
++    X87_CASES( 0xdfd8, "fstp %%st", "" )   /* FSTP9 */
++    X87_CASES( 0xdfc0, "ffree %%st", "\n\tffree %%st(0)\n\tfincstp" )  /* FFREEP: free ST(i), then pop */
++    default:
++        return FALSE;
++    }
++
++    /* x87 state only, the sse state is untouched */
++    memcpy( fpu, &state, offsetof( XMM_SAVE_AREA32, MxCsr ) );
++    top = (state.StatusWord >> 11) & 7;
++    for (i = 0; i < 8; i++) fpu->FloatRegisters[is_rosetta2 ? (top + i) & 7 : i] = state.FloatRegisters[i];
++
++    RIP_sig(sigcontext) += 2;
++    TRACE_(seh)( "emulated x87 alias %02x %02x\n", instr[0], instr[1] );
+     return TRUE;
+ }
++
++#undef X87_CASES
++#undef X87_RUN
++
++/* MOBETTA END emulation */
+ #endif
+ 
+ /***********************************************************************
+@@ -2518,6 +2689,9 @@
+         if (handle_cet_nop( ucontext, &context.c )) return;
+         /* CW HACK 23427 */
+         if (emulate_xgetbv( ucontext, &context.c )) return;
++        /* MOBETTA HACK */
++        if (emulate_arpl( ucontext, &context.c )) return;
++        if (emulate_x87_alias( ucontext, &context.c )) return;
+ #endif
+         rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
+         break;
