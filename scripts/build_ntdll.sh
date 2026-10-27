@@ -56,8 +56,13 @@ PATCHES_SHA256=$(cat "$ROOT"/patches/*.patch | shasum -a 256 | awk '{print $1}')
 if [ "$(head -1 "$PATCH_STAMP" 2>/dev/null)" != "$PATCHES_SHA256" ]; then
     patched_files=$(grep -h '^+++ b/' "$ROOT"/patches/*.patch | cut -c7- | sort -u)
     for f in $( (tail -n +2 "$PATCH_STAMP" 2>/dev/null; echo "$patched_files") | sort -u); do
-        tar -xzf "$SRC/$CX_TARBALL" -C "$SRC" "sources/wine/$f"
-        touch "$SRC/sources/wine/$f"
+        # Files a patch creates are not in the tarball: remove them instead
+        if tar -tzf "$SRC/$CX_TARBALL" "sources/wine/$f" > /dev/null 2>&1; then
+            tar -xzf "$SRC/$CX_TARBALL" -C "$SRC" "sources/wine/$f"
+            touch "$SRC/sources/wine/$f"
+        else
+            rm -f "$SRC/sources/wine/$f"
+        fi
     done
     for p in "$ROOT"/patches/*.patch; do
         patch -p1 -s -d "$SRC/sources/wine" < "$p"
