@@ -31,7 +31,7 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 - [x] Phase 2: Reproducible engine build
 - [x] Phase 3: Instruction emulation (in game: past character select, playing in the world)
 - [x] Phase 3b: Performance (20 -> 80 FPS average, 30+ minute sessions)
-- [x] Engine package `WS12WineCX26.3_RDROSETTA`
+- [x] Engine package `WS12WineCX26.3_Mobetta`
 - [ ] Phase 4: Wider testing
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
@@ -51,14 +51,14 @@ Requires Xcode Command Line Tools and Homebrew (`bison`, `cmake`, `sevenzip`, `g
 ```bash
 bash scripts/build_ntdll.sh        # Wine ntdll.so with patches/ applied
 bash scripts/build_x87sidecar.sh   # x87sidecar at the pinned commit
-bash scripts/package_engine.sh     # -> build/engine/WS12WineCX26.3_RDROSETTA.tar.7z
+bash scripts/package_engine.sh     # -> build/engine/WS12WineCX26.3_Mobetta.tar.7z
 ```
 
 Every step checks SHA-256 hashes, and the output is reproducible.
 
 ## Installing
 
-1. Copy `WS12WineCX26.3_RDROSETTA.tar.7z` to `~/Library/Application Support/Wineskin/Engines/`
+1. Copy `WS12WineCX26.3_Mobetta.tar.7z` to `~/Library/Application Support/Wineskin/Engines/`
 2. Create a new wrapper with that engine in Wineskin Winery (or change the engine of an existing wrapper)
 3. Run the game as usual
 

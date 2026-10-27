@@ -1,5 +1,5 @@
 #!/bin/bash
-# MoBetta - Package the WS12WineCX26.3_RDROSETTA Wineskin engine
+# MoBetta - Package the WS12WineCX26.3_Mobetta Wineskin engine
 #
 # Stock WS12WineCX26.3_DXMT with lib/wine/x86_64-unix/ntdll.so replaced (build/out/ntdll.so)
 # and bin/x87sidecar added (build/out/x87sidecar), plus x87sidecar's MIT license in
@@ -10,13 +10,13 @@
 #
 # Requires: 7-Zip (brew install sevenzip), build_ntdll.sh and build_x87sidecar.sh run first
 # Usage: bash scripts/package_engine.sh [path/to/WS12WineCX26.3_DXMT.tar.7z]
-# Output: build/engine/WS12WineCX26.3_RDROSETTA.tar.7z
+# Output: build/engine/WS12WineCX26.3_Mobetta.tar.7z
 
 set -e
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-ENGINE="WS12WineCX26.3_RDROSETTA"
+ENGINE="WS12WineCX26.3_Mobetta"
 STOCK_ENGINE="WS12WineCX26.3_DXMT"
 STOCK_ARCHIVE="${1:-$HOME/Library/Application Support/Wineskin/Engines/$STOCK_ENGINE.tar.7z}"
 STOCK_SHA256="7b3f383a2209de5765eef45f1d6fc316682cfcfbb3518d7470e4b51f00e7cd08"

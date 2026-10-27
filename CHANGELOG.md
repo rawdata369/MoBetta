@@ -5,7 +5,7 @@ All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 ## 2026-10-27 - Engine package
 
 ### Added
-- **`WS12WineCX26.3_RDROSETTA` Wineskin engine**, built by `scripts/package_engine.sh` from the stock `WS12WineCX26.3_DXMT` engine. Changes from stock: MoBetta's `ntdll.so`, `bin/x87sidecar`, the sidecar's MIT license (`share/doc/x87sidecar/LICENSE`), and the `version` file. Every other file is byte-for-byte stock. The build is reproducible (SHA-256 `49b345445bf4ca5209e824bbb44ae4c8d83dd76996ca20724936b23682e87b3f`)
+- **`WS12WineCX26.3_Mobetta` Wineskin engine**, built by `scripts/package_engine.sh` from the stock `WS12WineCX26.3_DXMT` engine. Changes from stock: MoBetta's `ntdll.so`, `bin/x87sidecar`, the sidecar's MIT license (`share/doc/x87sidecar/LICENSE`), and the `version` file. Every other file is byte-for-byte stock. The build is reproducible (SHA-256 `cf244efd1625030a21d763968cef59e4f2911f8b90ac493dd09ae8c0bdadca51`)
 - `scripts/build_x87sidecar.sh`: builds x87sidecar from a pinned upstream commit, checks the binary hash, and runs the sidecar's `--probe` compatibility check
 - `scripts/baseline.sh`: SHA-256 baseline of the game folder (`take` / `verify`). It also reports added or removed files, to prove that a test run changed nothing in the game
 
