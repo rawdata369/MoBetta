@@ -2,6 +2,13 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-10-27 - Faster GL buffer mapping
+
+### Changed
+- **Up to ~20% higher frame rate** (`patches/0004`). In a 32-bit game, every time Wine's OpenGL hands the game a pointer into a graphics buffer that lives above 4 GB, it maps that memory again into the low 4 GB, and the game's writes then fault the pages in again. The driver almost always returns the same memory (99.7% of maps in a WoW 3.3.5a test run), so the low mapping is now kept and reused while it still points at the same memory. Wine checks that on every map and maps again when the driver has moved or replaced the buffer
+- Result in WoW 3.3.5a (Shadowglen, windowed, vsync off, one run each): **85-105 -> 106-116 FPS** in a light view, **56-75 -> 60-80 FPS** in the heaviest view (the inn); max 127 FPS. Time the render thread spends mapping buffers: 6.8% -> 2.7%
+- The engine now also replaces `lib/wine/x86_64-unix/opengl32.so`. `scripts/build_opengl32.sh` builds it reproducibly; engine package SHA-256 `7cecba75417e0f5ef9d0a440535cd4abfa6f70b64d76f1e008f803eaffa94cb8`
+
 ## 2026-10-27 - Engine package
 
 ### Added

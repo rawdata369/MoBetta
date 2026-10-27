@@ -1,0 +1,125 @@
+MoBetta: opengl32: Reuse the wow64 buffer alias on macOS while it still maps the same pages.
+
+Apple's GL has no pinned-memory or Vulkan-interop path, so for a 32-bit
+process wow64_map_buffer gives every glMapBuffer/glMapBufferRange on a buffer
+whose driver pointer is above 4 GB a fresh mach_vm_remap of the host range into
+the buffer's low vm_ptr. Unmap only clears the pointers, so the next map remaps
+again, and the new alias starts with no page-table entries: the game's writes
+fault in again. In WoW 3.3.5a this was the largest single item on the
+wined3d_cs thread (6.8-8.8% of its samples in mach_vm_remap).
+
+The driver hands out the same host range on almost every map (99.7% of 3.77
+million maps in a Shadowglen run). The buffer now remembers the range it
+aliased and the VM object and offset behind it right after the remap; the next
+map of the same range reuses the alias when mach_vm_region_recurse still finds
+that object and offset there. The alias holds a reference on the object, so it
+stays alive and a range the driver freed and allocated again, or that got a
+copy-on-write shadow, is backed by a different object and is remapped as
+before. Replacing vm_ptr (buffer_vm_alloc) or a failed remap drops the cache.
+
+Measured in WoW 3.3.5a, Shadowglen, windowed, gxVSync 0, one run each:
+map cost on wined3d_cs 6.8% -> 2.7%; FPS facing the inn 56-75 -> 60-80, facing
+away 85-105 -> 106-116.
+
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -180,6 +180,12 @@
+     size_t copy_length;
+     void *vm_ptr;
+     SIZE_T vm_size;
++#ifdef __APPLE__
++    mach_vm_address_t remap_base;               /* host range aliased at vm_ptr by the last remap */
++    mach_vm_size_t remap_size;                  /* 0 when vm_ptr holds no alias */
++    unsigned int remap_object;                  /* VM object and offset behind remap_base after the remap */
++    memory_object_offset_t remap_offset;
++#endif
+     BOOL pinned;
+ 
+     /* members of Vulkan-backed buffer storages */
+@@ -2390,6 +2396,9 @@
+         NtFreeVirtualMemory( GetCurrentProcess(), &buffer->vm_ptr, &buffer->vm_size, MEM_RELEASE );
+         buffer->vm_ptr = NULL;
+         buffer->vm_size = 0;
++#ifdef __APPLE__
++        buffer->remap_size = 0;
++#endif
+     }
+     if (NtAllocateVirtualMemory( GetCurrentProcess(), &buffer->vm_ptr, zero_bits, &size,
+                                  MEM_COMMIT, PAGE_READWRITE ))
+@@ -2402,6 +2411,49 @@
+     return TRUE;
+ }
+ 
++#ifdef __APPLE__
++/* VM object and object offset behind addr, if a single region covers [addr, addr + size) */
++static BOOL get_vm_backing( mach_vm_address_t addr, mach_vm_size_t size, unsigned int *object,
++                            memory_object_offset_t *offset )
++{
++    vm_region_submap_short_info_data_64_t info;
++    mach_msg_type_number_t count;
++    mach_vm_address_t start;
++    mach_vm_size_t region_size;
++    natural_t depth = 0;
++
++    for (;;)
++    {
++        start = addr;
++        count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
++        if (mach_vm_region_recurse( mach_task_self(), &start, &region_size, &depth,
++                                    (vm_region_recurse_info_t)&info, &count ) != KERN_SUCCESS)
++            return FALSE;
++        if (!info.is_submap) break;
++        depth++;
++    }
++    if (!info.object_id || start > addr || addr + size > start + region_size) return FALSE;
++    *object = info.object_id;
++    *offset = info.offset + (addr - start);
++    return TRUE;
++}
++
++/* Whether the alias at vm_ptr still shares the pages of the host range at base. The driver
++ * often hands out the same range on every map; remapping it each time costs a mach_vm_remap
++ * and a fresh round of page faults through the new alias. The alias holds a reference on the
++ * VM object it was made from, so that object stays alive and a range the driver freed and
++ * allocated again, or that got a copy-on-write shadow, is backed by a different object. */
++static BOOL remap_is_current( struct buffer *buffer, mach_vm_address_t base, mach_vm_size_t size )
++{
++    unsigned int object;
++    memory_object_offset_t offset;
++
++    if (!buffer->remap_size || buffer->remap_base != base || buffer->remap_size < size) return FALSE;
++    if (!get_vm_backing( base, size, &object, &offset )) return FALSE;
++    return object == buffer->remap_object && offset == buffer->remap_offset;
++}
++#endif
++
+ static void flush_buffer( TEB *teb, struct buffer *buffer, size_t offset, size_t length )
+ {
+     VkMappedMemoryRange memory_range =
+@@ -2640,14 +2692,23 @@
+         }
+ 
+         lowaddr = (UINT_PTR)buffer->vm_ptr;
+-        if ((kr = mach_vm_remap( mach_task_self(), &lowaddr, mapping_size, 0, VM_FLAGS_FIXED|VM_FLAGS_OVERWRITE,
+-                                 mach_task_self(), base, FALSE, &cur_protection, &max_protection,
+-                                 VM_INHERIT_DEFAULT )) != KERN_SUCCESS)
++        if (remap_is_current( buffer, base, mapping_size ))
++            TRACE( "    reusing alias of 0x%08llx at 0x%08llx\n", base, lowaddr );
++        else if ((kr = mach_vm_remap( mach_task_self(), &lowaddr, mapping_size, 0, VM_FLAGS_FIXED|VM_FLAGS_OVERWRITE,
++                                      mach_task_self(), base, FALSE, &cur_protection, &max_protection,
++                                      VM_INHERIT_DEFAULT )) != KERN_SUCCESS)
+         {
+             WARN( "failed to remap memory; Mach error %d\n", kr );
++            buffer->remap_size = 0;
+             set_gl_error( teb, GL_OUT_OF_MEMORY );
+             goto unmap;
+         }
++        else if (get_vm_backing( base, mapping_size, &buffer->remap_object, &buffer->remap_offset ))
++        {
++            buffer->remap_base = base;
++            buffer->remap_size = mapping_size;
++        }
++        else buffer->remap_size = 0;
+ 
+         buffer->map_ptr = (void *)(lowaddr + ((vm_map_offset_t)ptr - base));
+         TRACE( "    remapped pointer %p (aligned size %zu) to address %p\n", ptr, mapping_size, buffer->map_ptr );
