@@ -1,0 +1,133 @@
+MoBetta: mtld3d: Default the log directory to %LOCALAPPDATA%\mtld3d-logs.
+
+athei/mtld3d v0.15.1 (9919759) writes its log to mtld3d-logs beside the
+executable when log.dir is empty, both for the log Direct3DCreate9 opens
+and for the early location a crash before it reports to. Beside Wow.exe
+is the game folder (MoBetta constraint 1). Our wrapper set log.dir through
+MTLD3D_CONFIG in user.reg, which a packaged engine cannot carry.
+
+The default moves to the prefix's own AppData\Local, in both places, so it
+is not a profile key: the early location is derived at load, before any
+config or profile is read. Without LOCALAPPDATA there is no default and
+the log goes to stderr rather than to the executable's directory. A
+log.dir set in mtld3d.conf or MTLD3D_CONFIG still wins.
+
+diff --git a/mtld3d.conf b/mtld3d.conf
+index 657d627..6c8ff0e 100644
+--- a/mtld3d.conf
++++ b/mtld3d.conf
+@@ -68,7 +68,7 @@
+ # only its first-chance line on stderr. A fault the game recovers moves
+ # nothing.
+ #
+-# Default: "" (`mtld3d-logs` next to the executable)
++# Default: "" (`mtld3d-logs` under %LOCALAPPDATA%, inside the Wine prefix)
+ # Supported values: a directory path, relative to the executable's
+ # directory or absolute; empty means the default
+ 
+diff --git a/windows/core/src/config.rs b/windows/core/src/config.rs
+index c929fba..753188d 100644
+--- a/windows/core/src/config.rs
++++ b/windows/core/src/config.rs
+@@ -145,7 +145,8 @@ pub struct Mtld3dConfig {
+     /// Directory the process's log file and GPU traces go into.
+     ///
+     /// Resolved against the executable's directory; an absolute path stands
+-    /// as is. Empty string = `mtld3d-logs` beside the executable. The log
++    /// as is. Empty string = `mtld3d-logs` under `%LOCALAPPDATA%` (MoBetta:
++    /// upstream puts it beside the executable, in the game's folder). The log
+     /// file is one per process, so the first `Direct3DCreate9` names its
+     /// location and later ones leave it. Default: `""`. File key: `log.dir`.
+     pub log_dir: String,
+diff --git a/windows/d3d9/src/log_sink.rs b/windows/d3d9/src/log_sink.rs
+index fe58eb9..531ba4f 100644
+--- a/windows/d3d9/src/log_sink.rs
++++ b/windows/d3d9/src/log_sink.rs
+@@ -24,7 +24,7 @@
+ //! until it is gone.
+ //!
+ //! [`open`] names that file's location first: the directory `log.dir` picks,
+-//! or `mtld3d-logs` next to the executable, as a unix path the unix side can
++//! or `mtld3d-logs` under `%LOCALAPPDATA%`, as a unix path the unix side can
+ //! create, plus the executable's stem for the file name. The pid in the name
+ //! is the unix side's own: the one this side sees is Wine's process id, which
+ //! repeats from one launch to the next.
+@@ -49,7 +49,7 @@
+ use core::ffi::c_void;
+ use std::{
+     os::windows::io::AsRawHandle,
+-    path::Path,
++    path::{Path, PathBuf},
+     sync::{
+         LazyLock, Mutex,
+         mpsc::{Receiver, Sender, channel},
+@@ -76,7 +76,11 @@ unsafe extern "system" {
+     fn RtlIsCriticalSectionLockedByThread(section: *mut c_void) -> i32;
+ }
+ 
+-/// The log directory beside the executable when `log.dir` is empty.
++/// The log directory under `%LOCALAPPDATA%` when `log.dir` is empty.
++///
++/// MoBetta: not beside the executable, where upstream puts it, since that is
++/// the game's folder, which nothing of the engine may write into. The prefix's
++/// own `AppData\Local` holds it instead, for the crash location too.
+ const DEFAULT_DIR: &str = "mtld3d-logs";
+ 
+ /// `OpenThread` access right that allows waiting for the thread's end.
+@@ -95,7 +99,7 @@ const PEB_LOADER_LOCK_OFFSET: usize = 0x110;
+ /// Name the process's log location to the unix side.
+ ///
+ /// The directory is `log.dir` resolved against the executable's directory
+-/// (an absolute value stands as is), or `mtld3d-logs` beside the executable
++/// (an absolute value stands as is), or `mtld3d-logs` under `%LOCALAPPDATA%`
+ /// when the key is empty; it is created here, the file itself by the unix
+ /// side with the first line it writes. When the directory cannot be created
+ /// or has no unix path, the thunk still goes out, empty, so the unix side
+@@ -131,7 +135,9 @@ fn log_location(cfg: &mtld3d_core::config::Mtld3dConfig) -> Result<(String, Stri
+     let exe = std::env::current_exe().map_err(|e| format!("current_exe() unavailable ({e})"))?;
+     let exe_dir = exe.parent().unwrap_or_else(|| Path::new("."));
+     let dir = if cfg.log_dir.is_empty() {
+-        exe_dir.join(DEFAULT_DIR)
++        local_app_data()
++            .ok_or_else(|| String::from("LOCALAPPDATA unset"))?
++            .join(DEFAULT_DIR)
+     } else {
+         exe_dir.join(&cfg.log_dir)
+     };
+@@ -150,19 +156,29 @@ fn log_location(cfg: &mtld3d_core::config::Mtld3dConfig) -> Result<(String, Stri
+ /// Derived at load, before `mtld3d.conf` is read, so `log.dir` plays no
+ /// part: this is where a crash report goes when it comes before
+ /// `Direct3DCreate9` names the location. Nothing is created here; the unix
+-/// side creates the directory only if a crash report needs it. The
+-/// executable's directory is mapped rather than the log directory itself,
+-/// since a directory that does not exist yet may have no unix path.
++/// side creates the directory only if a crash report needs it.
++/// `%LOCALAPPDATA%` is mapped rather than the log directory itself, since a
++/// directory that does not exist yet may have no unix path.
+ pub fn early_location() -> Option<(String, String)> {
+     let exe = std::env::current_exe().ok()?;
+-    let exe_dir = exe.parent()?;
+-    let unix_exe_dir = crate::wine_path::unix_path(exe_dir)?;
++    let unix_parent = crate::wine_path::unix_path(&local_app_data()?)?;
+     let stem = exe.file_stem().map_or_else(
+         || String::from("mtld3d"),
+         |s| s.to_string_lossy().into_owned(),
+     );
+-    let separator = if unix_exe_dir.ends_with('/') { "" } else { "/" };
+-    Some((format!("{unix_exe_dir}{separator}{DEFAULT_DIR}"), stem))
++    let separator = if unix_parent.ends_with('/') { "" } else { "/" };
++    Some((format!("{unix_parent}{separator}{DEFAULT_DIR}"), stem))
++}
++
++/// `%LOCALAPPDATA%`, the parent of the default log directory, or `None`.
++///
++/// Wine sets it for every process from the prefix's user profile. Without
++/// it there is no default location and the log goes to stderr: falling back
++/// to the executable's directory would write into the game's folder.
++fn local_app_data() -> Option<PathBuf> {
++    std::env::var_os("LOCALAPPDATA")
++        .filter(|dir| !dir.is_empty())
++        .map(PathBuf::from)
+ }
+ 
+ /// What travels to the logging thread.
