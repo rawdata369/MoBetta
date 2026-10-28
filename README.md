@@ -90,7 +90,7 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
    ```bash
    shasum -a 256 -c SHA256SUMS      # must print: WS12WineCX26.3_Mobetta.tar.7z: OK
    ```
-3. Move `WS12WineCX26.3_Mobetta.tar.7z` into `~/Library/Application Support/Wineskin/Engines/` (in Finder: Go > Go to Folder..., paste the path; create the `Engines` folder if it isn't there). Leave the file packed, as the other engines there are
+3. Move `WS12WineCX26.3_Mobetta.tar.7z` into `~/Library/Application Support/Wineskin/Engines/` (in Finder: Go > Go to Folder..., paste the path). This folder comes from Porting Kit or Wineskin Winery, so one of them must be installed first (see [Requirements](#requirements)); create the `Engines` folder if it isn't there. Leave the file packed, as the other engines there are
 4. Switch the game's wrapper to the engine:
    - Quit the game. In Finder, right-click the game's wrapper app, Show Package Contents, open `Contents/Wineskin.app`
    - **Advanced** > **Tools** > **Change Engine Used**, pick `WS12WineCX26.3_Mobetta`, OK
