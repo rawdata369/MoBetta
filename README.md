@@ -25,6 +25,19 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 
 **Key constraint:** No game file modifications, nothing injected into the game process. This engine is designed for use with servers that run anti-cheat systems. A SHA-256 baseline of the game folder is checked before and after every test.
 
+## Why MoBetta
+
+Other tools already run 3.3.5a on Apple Silicon. The best known, [WoWSilicon](https://github.com/WoWSilicon/WoWSilicon), is a full launcher for 1.12, 2.4.3 and 3.3.5a with addon and mod managers. It gets there by patching the game folder: for a 3.3.5a client it adds `d3d9.dll`, `mtld3d.conf`, `libDllLdr.dll`, `mods/winerosetta.dll` and `mods/libSiliconPatch.dll`, lists them in `dlls.txt`, and patches the game's own `DivxDecoder.dll` so those DLLs load into the game (WoWSilicon's `PatchService.swift`, October 2026).
+
+MoBetta is for players who want the client left exactly as Blizzard shipped it:
+
+- **The game folder is untouched.** No files added, none patched. A SHA-256 of every file in the game folder is checked before and after each test
+- **Nothing is added to the game process.** No extra DLLs, no DLL loader, no hooks or patches in the game's code. The crash fix lives in Wine's own exception handling, and Direct3D is the engine's own `d3d9`, in place of Wine's
+- **It's an engine, not a launcher.** Your Porting Kit or Wineskin wrapper switches to it in a few clicks, and switching back undoes it
+- **Open and reproducible.** Built from pinned sources; `build_engine.sh` rebuilds the release byte for byte
+
+MoBetta can't promise how any server's rules or anti-cheat treat a Mac client. What it does promise is an unmodified client. If you'd rather have an all-in-one launcher with addon management and several game versions, WoWSilicon is a good choice; both build on [x87sidecar](https://github.com/athei/x87sidecar) and [mtld3d](https://github.com/athei/mtld3d).
+
 ## Performance
 
 In game with the v1.0.0 engine on a MacBook M3, windowed, medium-high graphics settings, FPS from the in-game counter (Ctrl+R). Shattrath and Booty Bay in the rain run lowest.
