@@ -93,6 +93,7 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 - **Mac:** Apple Silicon (M1 or later) with Rosetta 2 installed
 - **Porting Kit or Wineskin installed:** [Porting Kit](https://www.portingkit.com) or [Wineskin Winery](https://github.com/Gcenx/WineskinServer), with a wrapper (port) for the game already set up and working
 - **Game:** WoW 3.3.5a (build 12340)
+- **Other games:** untested. Nothing in the engine is specific to WoW: the instruction emulation and x87sidecar apply to any 32-bit Windows program, and mtld3d to any Direct3D 9 game. It might work for other old games, including WoW 1.12 and 2.4.3, but only 3.3.5a has been tested
 - **Tested on:** MacBook M3, macOS 27
 - **Base:** CrossOver 26.3 Wine (Porting Kit's engine `WS12WineCX26.3_DXMT`)
 
