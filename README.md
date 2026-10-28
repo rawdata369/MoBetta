@@ -78,7 +78,7 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 ## Requirements
 
 - **Mac:** Apple Silicon (M1 or later) with Rosetta 2 installed
-- **Wrapper:** a Porting Kit or Wineskin wrapper for the game
+- **Porting Kit or Wineskin installed:** [Porting Kit](https://www.portingkit.com) or [Wineskin Winery](https://github.com/Gcenx/WineskinServer), with a wrapper (port) for the game already set up and working
 - **Game:** WoW 3.3.5a (build 12340)
 - **Tested on:** MacBook M3, macOS 27
 - **Base:** CrossOver 26.3 Wine (Porting Kit's engine `WS12WineCX26.3_DXMT`)
