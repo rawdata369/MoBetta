@@ -2,6 +2,12 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-10-27 - mtld3d: built-in WoW defaults, reproducible build
+
+### Changed
+- **HDR off and the shader cache off are now built into our mtld3d** (`patches/mtld3d/0002`), in mtld3d's own World of Warcraft profile. No `MTLD3D_CONFIG` setting is needed any more, so a wrapper gets the fix from the engine alone. The shader cache stays off because mtld3d writes it next to Wow.exe, inside the game folder. `mtld3d.conf` or `MTLD3D_CONFIG` can still turn either back on. Same startup (first frame in 2 s) and frame rate as before
+- **`scripts/build_mtld3d.sh` is byte-for-byte reproducible on any Mac.** Two clean builds, from different clones with different cargo homes, give the same four files. The build runs in a fixed directory (`/private/tmp/mobetta-mtld3d`), source paths are rewritten to fixed names, and the DLLs are linked without a PDB, whose link command line made every build's hash different. Anyone can build mtld3d from source and compare the result with ours
+
 ## 2026-10-27 - Direct3D 9 on Metal (in testing)
 
 ### Added
