@@ -85,6 +85,8 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Installing
 
+Setting up a new Porting Kit port for the game? Follow the [Porting Kit guide with screenshots](docs/PORTING_KIT.md). For a wrapper you already have:
+
 1. Download `WS12WineCX26.3_Mobetta.tar.7z` and `SHA256SUMS` from the [latest release](https://github.com/rawdata369/MoBetta/releases/latest)
 2. Check the download. In Terminal, in the folder you saved both files to:
    ```bash
