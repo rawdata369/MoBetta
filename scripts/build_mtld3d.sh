@@ -4,6 +4,9 @@
 # Applies patches/mtld3d/*.patch in order (0001 drops the Wow.exe import hooks).
 # Builds the two pieces a 32-bit game on our x86_64 Wine loads:
 #   i386-windows/{d3d9,mtld3d}.dll (+ mtld3d.fake.dll, the prefix marker)
+#   d3d9.dll gets winebuild's builtin mark here, as mtld3d's install target does:
+#   the loader skips unmarked PEs in lib/wine and falls back to the prefix's
+#   stock d3d9.dll (Session #11)
 #   x86_64-unix/mtld3d.so
 # Output: build/out/mtld3d/, with SHA-256 sums printed (not pinned yet).
 # mtld3d.so and mtld3d.fake.dll rebuild identical. The two DLLs' code does too,
@@ -100,6 +103,13 @@ fi
 mkdir -p "$OUT/i386-windows" "$OUT/x86_64-unix"
 cp "$PE_OUT/d3d9.dll" "$PE_OUT/mtld3d.dll" "$PE_OUT/mtld3d.fake.dll" "$OUT/i386-windows/"
 cp "$UNIX_OUT/mtld3d.so" "$OUT/x86_64-unix/"
+"$SDK/bin/winebuild" --builtin "$OUT/i386-windows/d3d9.dll"
+for dll in d3d9 mtld3d; do
+    if [ "$(dd if="$OUT/i386-windows/$dll.dll" bs=1 skip=64 count=16 2>/dev/null)" != "Wine builtin DLL" ]; then
+        echo "$dll.dll has no builtin mark"
+        exit 1
+    fi
+done
 
 echo "Built: $OUT"
 (cd "$OUT" && shasum -a 256 i386-windows/* x86_64-unix/*)
