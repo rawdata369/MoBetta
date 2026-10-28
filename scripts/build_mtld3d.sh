@@ -8,10 +8,14 @@
 #   the loader skips unmarked PEs in lib/wine and falls back to the prefix's
 #   stock d3d9.dll (Session #11)
 #   x86_64-unix/mtld3d.so
-# Output: build/out/mtld3d/, with SHA-256 sums printed (not pinned yet).
-# mtld3d.so and mtld3d.fake.dll rebuild identical. The two DLLs' code does too,
-# but /Brepro derives their timestamp and PDB GUID from the PDB, which records
-# rustc's random deps/rustcXXXXXX link directory, so those fields vary per build.
+# Output: build/out/mtld3d/, with SHA-256 sums printed.
+#
+# Byte-reproducible on any Mac (Session #13): the patched tree is copied without
+# .git to the fixed BUILD_DIR and built there. Cargo hashes the absolute path
+# of a crate outside its workspace into the crate ID (windows/ and unix/ each
+# use crates from the other), which shifts symbol names and code layout, so the
+# path has to be the same everywhere. Without .git the release stamp is the
+# manifest version, v0.15.1, whatever the clone's tags.
 #
 # No sudo: the MSVC CRT/SDK splat goes to build/xwin instead of mtld3d's
 # /opt/xwin; RUSTFLAGS and CFLAGS_/CXXFLAGS_<target> replace the /opt paths in
@@ -33,16 +37,18 @@ XWIN_CRT_VERSION="14.44.17.14"
 XWIN_SDK_VERSION="10.0.26100"
 
 SRC="$ROOT/build/mtld3d"
+BUILD_DIR="/private/tmp/mobetta-mtld3d"
 SDK="$ROOT/build/mtld3d-sdk"
 XWIN="$ROOT/build/xwin"
 WINE64_BUILD="$ROOT/build/wine64"
 OUT="$ROOT/build/out/mtld3d"
-PE_OUT="$SRC/windows/target/i686-pc-windows-msvc/production"
-UNIX_OUT="$SRC/unix/target/x86_64-apple-darwin/production"
+PE_OUT="$BUILD_DIR/windows/target/i686-pc-windows-msvc/production"
+UNIX_OUT="$BUILD_DIR/unix/target/x86_64-apple-darwin/production"
 
 # PE linker and archiver from the toolchain's llvm-tools (mtld3d's setup-rust)
 TOOLS="$(rustc +stable --print sysroot)/lib/rustlib/$(rustc +stable -vV | sed -n 's/^host: //p')/bin"
-CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
+CARGO_DIR="${CARGO_HOME:-$HOME/.cargo}"
+CARGO_BIN="$CARGO_DIR/bin"
 ln -sf "$TOOLS/rust-lld" "$CARGO_BIN/lld-link"
 ln -sf "$TOOLS/llvm-ar" "$CARGO_BIN/llvm-lib"
 
@@ -60,8 +66,10 @@ for p in "$ROOT"/patches/mtld3d/*.patch; do
 done
 
 if [ "$1" = "--clean" ]; then
-    rm -rf "$SRC/windows/target" "$SRC/unix/target"
+    rm -rf "$BUILD_DIR"
 fi
+mkdir -p "$BUILD_DIR"
+rsync -a --delete --exclude /.git --exclude target/ --exclude /mobetta-build.log "$SRC/" "$BUILD_DIR/"
 
 # Build-only WINE_SDK
 make -C "$WINE64_BUILD" -s dlls/winecrt0/i386-windows/libwinecrt0.a \
@@ -86,12 +94,24 @@ fi
 
 LOG="$SRC/mobetta-build.log"
 INC="-idirafter $XWIN/crt/include -idirafter $XWIN/sdk/include/ucrt -idirafter $XWIN/sdk/include/um -idirafter $XWIN/sdk/include/shared"
-env RUSTFLAGS="-C target-cpu=pentium4 -C target-feature=-crt-static -C link-arg=/Brepro -Lnative=$XWIN/crt/lib/x86 -Lnative=$XWIN/sdk/lib/um/x86 -Lnative=$XWIN/sdk/lib/ucrt/x86" \
-    "CFLAGS_i686-pc-windows-msvc=-march=pentium4 -fno-omit-frame-pointer $INC" \
-    "CXXFLAGS_i686-pc-windows-msvc=-march=pentium4 -fno-omit-frame-pointer $INC" \
-    make -C "$SRC" PROD=1 WINE_SDK="$SDK" windows-i686 > "$LOG" 2>&1 \
+# Panic locations and C __FILE__ strings name /mtld3d and /cargo instead of
+# BUILD_DIR and the cargo registry (which is per user). /DEBUG:NONE drops the
+# PDB, which records the link command line (absolute paths, rustc's random
+# deps/rustcXXXXXX directory) and which /Brepro would hash into the DLL's
+# timestamp. No PDB ever shipped. /build-id keeps the CodeView record the log's
+# image ID is read from, its GUID now hashed from the DLL alone
+REMAP="--remap-path-prefix=$CARGO_DIR=/cargo --remap-path-prefix=$BUILD_DIR=/mtld3d"
+CMAP="-ffile-prefix-map=$CARGO_DIR=/cargo -ffile-prefix-map=$BUILD_DIR=/mtld3d"
+env RUSTFLAGS="-C target-cpu=pentium4 -C target-feature=-crt-static -C link-arg=/Brepro -C link-arg=/DEBUG:NONE -C link-arg=/build-id $REMAP -Lnative=$XWIN/crt/lib/x86 -Lnative=$XWIN/sdk/lib/um/x86 -Lnative=$XWIN/sdk/lib/ucrt/x86" \
+    "CFLAGS_i686-pc-windows-msvc=-march=pentium4 -fno-omit-frame-pointer $CMAP $INC" \
+    "CXXFLAGS_i686-pc-windows-msvc=-march=pentium4 -fno-omit-frame-pointer $CMAP $INC" \
+    make -C "$BUILD_DIR" PROD=1 WINE_SDK="$SDK" windows-i686 > "$LOG" 2>&1 \
     || { tail -20 "$LOG"; exit 1; }
-make -C "$SRC" PROD=1 WINE_SDK="$SDK" unix-x64 >> "$LOG" 2>&1 \
+# RUSTFLAGS replaces unix/.cargo/config.toml's rustflags, so they are repeated here
+env RUSTFLAGS="-C target-cpu=x86-64-v2 -C target-feature=+bmi1,+bmi2,+lzcnt $REMAP" \
+    "CFLAGS_x86_64-apple-darwin=-march=x86-64-v2 -mbmi -mbmi2 -mlzcnt $CMAP" \
+    "CXXFLAGS_x86_64-apple-darwin=-march=x86-64-v2 -mbmi -mbmi2 -mlzcnt $CMAP" \
+    make -C "$BUILD_DIR" PROD=1 WINE_SDK="$SDK" unix-x64 >> "$LOG" 2>&1 \
     || { tail -20 "$LOG"; exit 1; }
 
 # The hooks must be gone from d3d9.dll

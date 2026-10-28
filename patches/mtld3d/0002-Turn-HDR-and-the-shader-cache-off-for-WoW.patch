@@ -1,0 +1,57 @@
+MoBetta: mtld3d: Turn HDR and the shader cache off in the wow profile.
+
+athei/mtld3d v0.15.1 (9919759) defaults to color.hdr.enable=true, an
+RGBA16Float wantsEDR layer. While its EDR headroom ramps, Wine's explorer
+refreshes its display devices every ~250 ms for ~45 s and WoW's first frame
+waits behind it: a black title screen, and a maximize stalls the same way
+(MoBetta Session #12, DECISIONS.md #8). shaderCache.enable=true writes
+mtld3d_shaders.bin next to Wow.exe, inside the game folder (MoBetta
+constraint 1).
+
+Both go into the built-in wow profile instead of a per-prefix MTLD3D_CONFIG,
+so a packaged engine carries them into any wrapper. The profile is the
+weakest layer: mtld3d.conf and MTLD3D_CONFIG still override either key.
+
+diff --git a/windows/core/src/app_profile.rs b/windows/core/src/app_profile.rs
+index df39443..6e29cd7 100644
+--- a/windows/core/src/app_profile.rs
++++ b/windows/core/src/app_profile.rs
+@@ -86,13 +86,20 @@ static PROFILES: &[AppProfile] = &[
+     // opening Video Options with more sizes than that fails with a Lua error.
+     // Wine's emulated mode list runs to forty-odd sizes, so the profile offers
+     // at most 32; the refresh rates of each kept size do not add buttons.
++    //
++    // MoBetta: HDR is off. The clients have no HDR content, and the EDR
++    // layer's headroom ramp keeps Wine's explorer refreshing its display
++    // devices for ~45 s, during which the game's first frame waits (black
++    // title screen) and a maximize stalls. The shader cache is off because
++    // it writes next to the executable, inside the game folder.
+     AppProfile {
+         name: "wow",
+         exe: "WoW.exe",
+         company: Some("Blizzard Entertainment"),
+         product: Some("World of Warcraft"),
+         original_filename: None,
+-        settings: "query.flushImmediate=true;query.eventImmediate=true;display.maxResolutions=32",
++        settings: "query.flushImmediate=true;query.eventImmediate=true;display.maxResolutions=32;\
++                   color.hdr.enable=false;shaderCache.enable=false",
+     },
+ ];
+ 
+diff --git a/windows/core/src/app_profile/tests.rs b/windows/core/src/app_profile/tests.rs
+index 10c44fa..13014ac 100644
+--- a/windows/core/src/app_profile/tests.rs
++++ b/windows/core/src/app_profile/tests.rs
+@@ -72,6 +72,12 @@ fn the_wow_profile_matches_both_clients_and_keeps_the_immediate_answers() {
+         assert!(profiled.query_event_immediate);
+         // The resolution dropdown holds 32 buttons, one per size.
+         assert_eq!(profiled.max_resolutions, 32);
++        // MoBetta: HDR and the in-game-folder shader cache off, and a user
++        // can still take either back.
++        assert!(stock.hdr_enable && stock.shader_cache_enable);
++        assert!(!profiled.hdr_enable);
++        assert!(!profiled.shader_cache_enable);
++        assert!(parse(Some(profile), "", Some("color.hdr.enable=true")).hdr_enable);
+     }
+     let nameless = AppIdentity::new("WoW.exe".to_owned(), None);
+     assert!(lookup(&nameless).is_none());
