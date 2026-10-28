@@ -23,7 +23,7 @@ STOCK_ENGINE="WS12WineCX26.3_DXMT"
 STOCK_ARCHIVE="${1:-$HOME/Library/Application Support/Wineskin/Engines/$STOCK_ENGINE.tar.7z}"
 STOCK_SHA256="7b3f383a2209de5765eef45f1d6fc316682cfcfbb3518d7470e4b51f00e7cd08"
 STOCK_WIN32U_SHA256="6d26be4d80e3d91983b2a6fa33402c29990a13a0f9675dba22353e53365ce805"
-OPENGL32_SHA256="53a7b678890b206c5a9224d41beb74395354875298830b050863eb22541feef6"
+OPENGL32_SHA256="2eda5e35a3ffb3237c2423411573a7d3a6751ff4815f40b835f73878a1d876de"
 
 WINE64_BUILD="$ROOT/build/wine64"
 LINK_LIBS="$ROOT/build/stock-link"
@@ -63,9 +63,10 @@ make -C "$WINE64_BUILD" -j8 dlls/opengl32/unix_thunks.o dlls/opengl32/unix_wgl.o
     > "$WINE64_BUILD/make-opengl32.log" 2>&1
 
 # The Makefile's link rule, with stock win32u.so in place of the one this tree cannot build
-# (stock is built for a newer macOS; ld warns, as it would for stock's own link)
+# (stock is built for a newer macOS; ld warns, as it would for stock's own link);
+# -oso_prefix as in build_ntdll.sh, so LC_UUID does not depend on the directory
 (cd "$WINE64_BUILD" && /usr/bin/clang -arch x86_64 -o "$ROOT/build/out/opengl32.so" -dynamiclib \
-    -install_name @rpath/opengl32.so -Wl,-rpath,@loader_path/ \
+    -install_name @rpath/opengl32.so -Wl,-rpath,@loader_path/ -Wl,-oso_prefix,"$ROOT/" \
     dlls/opengl32/unix_thunks.o dlls/opengl32/unix_wgl.o dlls/ntdll/ntdll.so "$LINK_LIBS/win32u.so" \
     2>&1 | grep -v "which was built for newer version" || true)
 strip -S "$ROOT/build/out/opengl32.so"

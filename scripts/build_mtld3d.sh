@@ -72,8 +72,11 @@ mkdir -p "$BUILD_DIR"
 rsync -a --delete --exclude /.git --exclude target/ --exclude /mobetta-build.log "$SRC/" "$BUILD_DIR/"
 
 # Build-only WINE_SDK
-make -C "$WINE64_BUILD" -s dlls/winecrt0/i386-windows/libwinecrt0.a \
-    dlls/winecrt0/x86_64-windows/libwinecrt0.a > /dev/null
+# (build_ntdll.sh builds the winecrt0 archives, with llvm-mingw on PATH)
+for a in i386 x86_64; do
+    [ -f "$WINE64_BUILD/dlls/winecrt0/$a-windows/libwinecrt0.a" ] \
+        || { echo "No $a winecrt0 archive: run scripts/build_ntdll.sh first"; exit 1; }
+done
 mkdir -p "$SDK/bin" "$SDK/lib/wine/i386-windows" "$SDK/lib/wine/x86_64-windows" \
     "$SDK/lib/wine/x86_64-unix"
 ln -sf "$ROOT/build/wine-tools/tools/winebuild/winebuild" "$SDK/bin/winebuild"
