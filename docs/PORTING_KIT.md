@@ -7,7 +7,13 @@ A step-by-step guide to setting up WoW 3.3.5a in a new Porting Kit port that run
 - An Apple Silicon Mac (M1 or later) with Rosetta 2. If macOS has never asked you to install it, run `softwareupdate --install-rosetta` in Terminal
 - [Porting Kit](https://www.portingkit.com) or [Wineskin Winery](https://github.com/Gcenx/WineskinServer) installed. This guide uses Porting Kit; with Wineskin Winery on its own, pick `WS12WineCX26.3_Mobetta` when you create the wrapper, or switch an existing one as in [Switch an existing port to MoBetta](#switch-an-existing-port-to-mobetta)
 - The WoW 3.3.5a (build 12340) client, for example Warmane's download
-- The MoBetta engine: download `WS12WineCX26.3_Mobetta.tar.7z` and `SHA256SUMS` from the [latest release](https://github.com/rawdata369/MoBetta/releases/latest), check them (`shasum -a 256 -c SHA256SUMS` must print `OK`), and move the `.tar.7z`, still packed, into `~/Library/Application Support/Wineskin/Engines/`. Do this before you start the port so Porting Kit lists the engine. `Library` is hidden in Finder: use Go > Go to Folder..., or press Shift + Cmd + . (period) to show hidden folders
+- The MoBetta engine: download `WS12WineCX26.3_Mobetta.tar.7z` from the [latest release](https://github.com/rawdata369/MoBetta/releases/latest)
+
+### Recommended
+
+- **Check the download.** Also download `SHA256SUMS` from the release, then in Terminal, in the folder with both files, run `shasum -a 256 -c SHA256SUMS`. It must print `WS12WineCX26.3_Mobetta.tar.7z: OK`
+- **Put the engine in place before you start the port**, so Porting Kit lists it in step 4: move the `.tar.7z`, still packed, into `~/Library/Application Support/Wineskin/Engines/`. If you skip this, pick a temporary engine in step 4 and [switch to MoBetta](#switch-an-existing-port-to-mobetta) afterwards
+- `Library` is hidden in Finder: use Go > Go to Folder..., or press Shift + Cmd + . (period) to show hidden folders
 
 ## 1. Put the game in its own folder
 
@@ -33,7 +39,7 @@ Click **Next** on the Introduction, read the Agreement, and click **Next**.
 
 ## 4. Advanced Settings: pick the engine
 
-Open the **Engine** list and pick **WS12WineCX26.3_Mobetta**. It appears only if the engine file is already in the Engines folder (see [Before you start](#before-you-start)). If it isn't there yet, pick **WS12WineCX26.3_DXMT**, the engine MoBetta is built on, and [switch to MoBetta](#switch-an-existing-port-to-mobetta) when the port is done.
+Open the **Engine** list and pick **WS12WineCX26.3_Mobetta**. It appears only if the engine file is already in the Engines folder (see [Recommended](#recommended)). If it isn't there yet, pick **WS12WineCX26.3_DXMT**, the engine MoBetta is built on, and [switch to MoBetta](#switch-an-existing-port-to-mobetta) when the port is done.
 
 ![Engine list with WS12WineCX26.3_Mobetta](screenshots/porting-kit/p5.jpg)
 
@@ -71,7 +77,7 @@ Start the port from where you saved it in step 6. In game, open the menu (Esc) >
 
 For a port made with another engine, or one you already had:
 
-1. Put the engine in the Engines folder, as in [Before you start](#before-you-start)
+1. Put the engine in the Engines folder, as in [Recommended](#recommended)
 2. Quit the game. In Finder, right-click the port's app and choose **Show Package Contents**
 
    ![Show Package Contents](screenshots/porting-kit/w1.jpg)
