@@ -27,7 +27,7 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 
 ## Performance
 
-In game with the v1.0.0 engine on a MacBook M3, windowed, FPS from the in-game counter (Ctrl+R). Shattrath and Booty Bay in the rain run lowest.
+In game with the v1.0.0 engine on a MacBook M3, windowed, medium-high graphics settings, FPS from the in-game counter (Ctrl+R). Shattrath and Booty Bay in the rain run lowest.
 
 | Place | FPS |
 |-------|-----|

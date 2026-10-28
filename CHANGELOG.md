@@ -5,7 +5,7 @@ All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 ## 2026-10-28 - In-game FPS screenshots
 
 ### Added
-- **Performance section in the README** with eight in-game screenshots and an FPS table, on the v1.0.0 engine on a MacBook M3: 191 FPS at the Ironforge gate, 155 in Stormwind, 138 in Orgrimmar, down to 97 in Booty Bay in the rain and 86 in Shattrath. Images are in `docs/screenshots/`, with chat and character names blurred
+- **Performance section in the README** with eight in-game screenshots and an FPS table, on the v1.0.0 engine on a MacBook M3 at medium-high settings: 191 FPS at the Ironforge gate, 155 in Stormwind, 138 in Orgrimmar, down to 97 in Booty Bay in the rain and 86 in Shattrath. Images are in `docs/screenshots/`, with chat and character names blurred
 
 ## 2026-10-28 - First release: install guide, checksums, licenses
 
