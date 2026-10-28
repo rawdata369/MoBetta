@@ -2,6 +2,15 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-10-28 - Direct3D 9 on Metal in the engine package
+
+### Added
+- **The engine package now includes our mtld3d build**, so Direct3D 9 runs straight on Metal with nothing to set up in the wrapper. `lib/wine/i386-windows/d3d9.dll` is mtld3d's, with `mtld3d.dll` and `mtld3d.so` added and mtld3d's Zlib license in `share/doc/mtld3d/LICENSE`. **~170 FPS in a light view, ~140 at the inn** (the previous package: 106-116 and 60-80). `scripts/package_engine.sh` now needs `scripts/build_mtld3d.sh` run first; engine SHA-256 `41d2a31e36570ca1b5e0db65ccda3d92018894663182c2598c66602201751f6e`, the same on every run
+- Works as a drop-in for an existing wrapper. On the first start, Wine updates the prefix once, as after any engine upgrade, and places `mtld3d.dll` where the game's `d3d9.dll` looks for it. Without that update the game stopped with "Failed to find a suitable display device". The package keeps Wine's `wine.inf` unchanged except for a newer file date, which is what triggers the update
+
+### Fixed
+- **mtld3d no longer writes into the game folder** (`patches/mtld3d/0003`). By default it put its log folder, `mtld3d-logs`, next to Wow.exe, and the same folder was used for crash reports. The default is now `mtld3d-logs` in the prefix's `AppData\Local`. Our test wrapper had avoided it with an `MTLD3D_CONFIG` registry setting, which an engine package cannot carry
+
 ## 2026-10-27 - mtld3d: built-in WoW defaults, reproducible build
 
 ### Changed
