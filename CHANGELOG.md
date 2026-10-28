@@ -2,6 +2,15 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-10-28 - One build script, same bytes anywhere
+
+### Added
+- **`scripts/build_engine.sh` builds the whole engine from a fresh clone.** It checks the tools it needs first, runs the four build steps, and fails unless the engine matches the pinned SHA-256: `71cb623920136b06f4515074b2dc238c702c0b76bf4cb1f68aa0511e48588441`. A clone in another directory, with every download fetched again, produced the same engine byte for byte
+
+### Fixed
+- **Wine's `ntdll.so` and `opengl32.so` now build the same in any directory.** Their Mach-O UUID was computed from debug info that recorded absolute build paths, so a build elsewhere differed in those 16 bytes. Source and object paths are now written relative to the repo. The code is unchanged; new hashes `32d1fa05...` (ntdll.so) and `2eda5e35...` (opengl32.so), engine `71cb6239...` (was `41d2a31e...`). Tested in game: loads, same frame rate
+- **mtld3d failed to build in a fresh tree.** A Wine library it links against was built without our cross compiler on the path, so Homebrew's mingw gcc was picked up instead. `build_ntdll.sh` now builds it with the right compiler
+
 ## 2026-10-28 - Direct3D 9 on Metal in the engine package
 
 ### Added

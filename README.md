@@ -35,7 +35,8 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 - [x] Phase 3b: Performance (20 -> 80 FPS average, 30+ minute sessions; buffer mapping up to ~20% more)
 - [x] Engine package `WS12WineCX26.3_Mobetta`
 - [x] mtld3d (Direct3D 9 on Metal) in the engine package (~140 FPS at the inn)
-- [ ] One build script for the whole engine, reproducible from any directory
+- [x] One build script for the whole engine, reproducible from any directory
+- [ ] Release (download, install guide, checksums)
 - [ ] Phase 4: Wider testing
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
@@ -50,16 +51,13 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Building
 
-Requires Xcode Command Line Tools and Homebrew (`bison`, `cmake`, `sevenzip`, `gh`), plus the stock `WS12WineCX26.3_DXMT.tar.7z` in Wineskin's Engines folder.
+Requires Xcode Command Line Tools, Homebrew (`bison`, `cmake`, `sevenzip`, `gh`, logged in), rustup (stable, targets `i686-pc-windows-msvc` and `x86_64-apple-darwin`, `llvm-tools`) with `cargo install --locked xwin`, plus the stock `WS12WineCX26.3_DXMT.tar.7z` in Wineskin's Engines folder.
 
 ```bash
-bash scripts/build_opengl32.sh     # Wine ntdll.so and opengl32.so with patches/ applied
-bash scripts/build_x87sidecar.sh   # x87sidecar at the pinned commit
-bash scripts/build_mtld3d.sh       # mtld3d, Direct3D 9 on Metal (needs Rust and xwin)
-bash scripts/package_engine.sh     # -> build/engine/WS12WineCX26.3_Mobetta.tar.7z
+bash scripts/build_engine.sh       # -> build/engine/WS12WineCX26.3_Mobetta.tar.7z
 ```
 
-Every step checks SHA-256 hashes, and the output is reproducible.
+It downloads the sources (each pinned by hash or commit), builds Wine's `ntdll.so` and `opengl32.so` with `patches/` applied, x87sidecar and mtld3d, packages the engine, and checks it against the release SHA-256 `71cb623920136b06f4515074b2dc238c702c0b76bf4cb1f68aa0511e48588441`. The build gives the same bytes in any directory. The steps also run on their own: `build_opengl32.sh`, `build_x87sidecar.sh`, `build_mtld3d.sh`, `package_engine.sh`.
 
 ## Installing
 
