@@ -1,0 +1,30 @@
+MoBetta: mtld3d: Drop the two import-table hooks d3d9's DllMain installs.
+
+athei/mtld3d v0.15.1 (9919759) installs two hooks at DLL_PROCESS_ATTACH:
+mode_list_hook rewrites the main module's EnumDisplaySettings* import slots
+to filter the resolution menu, and exit_code_hook rewrites its ExitProcess,
+RtlExitUserProcess and exit slots to keep the exit status. Both write into
+Wow.exe's import table, which changes the game image in memory (MoBetta
+constraint 2) where Warden can read it.
+
+Only the two install calls go. The detach path still calls uninstall, a
+no-op on a table nothing patched, and exit_code_hook::status() returns 0.
+LTO drops the hook code and the import patcher from d3d9.dll; its import
+table is unchanged. Costs: the process exits with status 0, and the
+resolution menu lists every mode Wine reports.
+
+diff --git a/windows/d3d9/src/lib.rs b/windows/d3d9/src/lib.rs
+index 2524c32..2d6c8f2 100644
+--- a/windows/d3d9/src/lib.rs
++++ b/windows/d3d9/src/lib.rs
+@@ -439,6 +439,8 @@ fn attach_process(instance: *mut c_void) {
+     // during `DLL_PROCESS_ATTACH`; Win32 `DisableThreadLibraryCalls` is
+     // safe to call from `DLL_PROCESS_ATTACH` with that module handle.
+     unsafe { DisableThreadLibraryCalls(instance) };
+-    mode_list_hook::install();
+-    exit_code_hook::install();
++    // MoBetta: no import-table hooks. Both rewrite slots in Wow.exe's IAT,
++    // which changes the game image in memory (MoBetta constraint 2) where
++    // Warden can read it. Without them the exit status is 0 and the
++    // resolution menu lists every Wine mode.
+ }
