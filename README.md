@@ -27,8 +27,6 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 
 ## Status
 
-🚧 **In Development**
-
 - [x] Phase 1: Confirm faulting instructions
 - [x] Phase 2: Reproducible engine build
 - [x] Phase 3: Instruction emulation (in game: past character select, playing in the world)
@@ -36,36 +34,46 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 - [x] Engine package `WS12WineCX26.3_Mobetta`
 - [x] mtld3d (Direct3D 9 on Metal) in the engine package (~140 FPS at the inn)
 - [x] One build script for the whole engine, reproducible from any directory
-- [ ] Release (download, install guide, checksums)
+- [x] Release: download, install guide, checksums
 - [ ] Phase 4: Wider testing
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
-## Target Environment
+## Requirements
 
-- **Machine:** Apple Silicon Mac (M1/M2/M3)
-- **Wrapper:** Porting Kit / Wineskin
-- **Base:** CrossOver 26.3 Wine (Wineskin engine `WS12WineCX26.3_DXMT`)
+- **Mac:** Apple Silicon (M1 or later) with Rosetta 2 installed
+- **Wrapper:** a Porting Kit or Wineskin wrapper for the game
 - **Game:** WoW 3.3.5a (build 12340)
 - **Tested on:** MacBook M3, macOS 27
+- **Base:** CrossOver 26.3 Wine (Porting Kit's engine `WS12WineCX26.3_DXMT`)
+
+## Installing
+
+1. Download `WS12WineCX26.3_Mobetta.tar.7z` and `SHA256SUMS` from the [latest release](https://github.com/rawdata369/MoBetta/releases/latest)
+2. Check the download. In Terminal, in the folder you saved both files to:
+   ```bash
+   shasum -a 256 -c SHA256SUMS      # must print: WS12WineCX26.3_Mobetta.tar.7z: OK
+   ```
+3. Move `WS12WineCX26.3_Mobetta.tar.7z` into `~/Library/Application Support/Wineskin/Engines/` (in Finder: Go > Go to Folder..., paste the path; create the `Engines` folder if it isn't there). Leave the file packed, as the other engines there are
+4. Switch the game's wrapper to the engine:
+   - Quit the game. In Finder, right-click the game's wrapper app, Show Package Contents, open `Contents/Wineskin.app`
+   - **Advanced** > **Tools** > **Change Engine Used**, pick `WS12WineCX26.3_Mobetta`, OK
+   - With Wineskin Winery you can also pick the engine when you create a new wrapper
+5. Start the game as usual. The first start on this engine updates the wrapper's Wine prefix once, as after any engine change
+
+To go back, change the engine to the one the wrapper had before (for a Porting Kit port, usually `WS12WineCX26.3_DXMT`).
+
+mtld3d writes its log to `drive_c/users/<user>/AppData/Local/mtld3d-logs/` in the prefix.
 
 ## Building
 
-Requires Xcode Command Line Tools, Homebrew (`bison`, `cmake`, `sevenzip`, `gh`, logged in), rustup (stable, targets `i686-pc-windows-msvc` and `x86_64-apple-darwin`, `llvm-tools`) with `cargo install --locked xwin`, plus the stock `WS12WineCX26.3_DXMT.tar.7z` in Wineskin's Engines folder.
+The release engine can be rebuilt from source and compared with the download. Requires Xcode Command Line Tools, Homebrew (`bison`, `cmake`, `sevenzip`, `gh`, logged in), rustup (stable, targets `i686-pc-windows-msvc` and `x86_64-apple-darwin`, `llvm-tools`) with `cargo install --locked xwin`, plus the stock engine `WS12WineCX26.3_DXMT.tar.7z` (SHA-256 `7b3f383a2209de5765eef45f1d6fc316682cfcfbb3518d7470e4b51f00e7cd08`) in Wineskin's Engines folder. Porting Kit downloads it there when a port is set up with that engine.
 
 ```bash
 bash scripts/build_engine.sh       # -> build/engine/WS12WineCX26.3_Mobetta.tar.7z
 ```
 
-It downloads the sources (each pinned by hash or commit), builds Wine's `ntdll.so` and `opengl32.so` with `patches/` applied, x87sidecar and mtld3d, packages the engine, and checks it against the release SHA-256 `71cb623920136b06f4515074b2dc238c702c0b76bf4cb1f68aa0511e48588441`. The build gives the same bytes in any directory. The steps also run on their own: `build_opengl32.sh`, `build_x87sidecar.sh`, `build_mtld3d.sh`, `package_engine.sh`.
-
-## Installing
-
-1. Copy `WS12WineCX26.3_Mobetta.tar.7z` to `~/Library/Application Support/Wineskin/Engines/`
-2. Create a new wrapper with that engine in Wineskin Winery (or change the engine of an existing wrapper)
-3. Run the game as usual. The first start on this engine updates the prefix once, as after any engine change
-
-mtld3d writes its log to `drive_c/users/<user>/AppData/Local/mtld3d-logs/` in the prefix.
+It downloads the sources (each pinned by hash or commit), builds Wine's `ntdll.so` and `opengl32.so` with `patches/` applied, x87sidecar and mtld3d, packages the engine, and checks it against the release SHA-256 in [`SHA256SUMS`](SHA256SUMS). The build gives the same bytes in any directory. The steps also run on their own: `build_opengl32.sh`, `build_x87sidecar.sh`, `build_mtld3d.sh`, `package_engine.sh`. mtld3d always builds in `/private/tmp/mobetta-mtld3d`, because its output depends on the build path; on a Mac with several users, only one of them can build there at a time.
 
 ## Tests
 
@@ -87,7 +95,17 @@ bash scripts/baseline.sh verify    # game folder unchanged
 
 ## License
 
-TBD. The engine includes x87sidecar under its MIT license (`share/doc/x87sidecar/LICENSE`), mtld3d under its Zlib license (`share/doc/mtld3d/LICENSE`) and Wine (LGPL 2.1).
+MoBetta (patches, scripts and docs) is licensed under the GNU Lesser General Public License, version 2.1 or later, the same as Wine; see [LICENSE](LICENSE).
+
+The engine package contains:
+
+| Part | License | Source |
+|------|---------|--------|
+| Wine (CrossOver 26.3.0), with `patches/` in `ntdll.so` and `opengl32.so` | LGPL 2.1 or later (`share/doc/wine/COPYING.LIB`) | [crossover-sources-26.3.0.tar.gz](https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz) + [`patches/`](patches) |
+| mtld3d v0.15.1, with `patches/mtld3d/` | Zlib (`share/doc/mtld3d/LICENSE`) | [athei/mtld3d](https://github.com/athei/mtld3d) + [`patches/mtld3d/`](patches/mtld3d) |
+| x87sidecar | MIT (`share/doc/x87sidecar/LICENSE`) | [athei/x87sidecar](https://github.com/athei/x87sidecar) |
+
+`share/doc/mobetta/SOURCE` in the engine lists what changed from the stock engine and the exact source versions. Every other file is Porting Kit's stock `WS12WineCX26.3_DXMT`, unchanged.
 
 ## Disclaimer
 

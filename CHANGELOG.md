@@ -2,6 +2,17 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-10-28 - First release: install guide, checksums, licenses
+
+### Added
+- **Install guide** in the README: download, check with `SHA256SUMS`, put the engine in Wineskin's Engines folder, switch a Porting Kit or Wineskin wrapper to it through its `Wineskin.app` (Advanced > Tools > Change Engine Used)
+- **`SHA256SUMS`** with the release engine's hash. `build_engine.sh` checks the same value
+- **License:** MoBetta is LGPL 2.1 or later, the same as Wine (`LICENSE`)
+- **The engine now carries Wine's license and a source note.** `share/doc/wine/COPYING.LIB` is Wine's LGPL text. `share/doc/mobetta/SOURCE` lists every file that differs from the stock engine and where its exact source is. The stock engine had neither. No code changed; engine SHA-256 `9bc8ec0626d050dcd0de110ced7ca331e62df0ab48211633cc0b5462807b5beb` (was `71cb6239...`)
+
+### Fixed
+- **`build_mtld3d.sh` explains a shared-Mac clash.** mtld3d has to build in `/private/tmp/mobetta-mtld3d` for its output to match the release. If another user on the Mac built there first, the script now says so and stops, instead of failing midway
+
 ## 2026-10-28 - One build script, same bytes anywhere
 
 ### Added
