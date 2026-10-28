@@ -5,7 +5,7 @@ A step-by-step guide to setting up WoW 3.3.5a in a new Porting Kit port that run
 ## Before you start
 
 - An Apple Silicon Mac (M1 or later) with Rosetta 2. If macOS has never asked you to install it, run `softwareupdate --install-rosetta` in Terminal
-- [Porting Kit](https://www.portingkit.com) installed
+- [Porting Kit](https://www.portingkit.com) or [Wineskin Winery](https://github.com/Gcenx/WineskinServer) installed. This guide uses Porting Kit; with Wineskin Winery on its own, pick `WS12WineCX26.3_Mobetta` when you create the wrapper, or switch an existing one as in [Switch an existing port to MoBetta](#switch-an-existing-port-to-mobetta)
 - The WoW 3.3.5a (build 12340) client, for example Warmane's download
 - The MoBetta engine: download `WS12WineCX26.3_Mobetta.tar.7z` and `SHA256SUMS` from the [latest release](https://github.com/rawdata369/MoBetta/releases/latest), check them (`shasum -a 256 -c SHA256SUMS` must print `OK`), and move the `.tar.7z`, still packed, into `~/Library/Application Support/Wineskin/Engines/`. Do this before you start the port so Porting Kit lists the engine. `Library` is hidden in Finder: use Go > Go to Folder..., or press Shift + Cmd + . (period) to show hidden folders
 
