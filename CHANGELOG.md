@@ -2,6 +2,17 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-10-27 - Direct3D 9 on Metal (in testing)
+
+### Added
+- **Our own build of [mtld3d](https://github.com/athei/mtld3d)**, which runs the game's Direct3D 9 straight on Metal instead of through Wine's OpenGL. `scripts/build_mtld3d.sh` builds it at a pinned upstream commit with `patches/mtld3d/0001` applied. The patch removes two hooks the upstream release installs at load time, which rewrite the game's import table in memory. Our build leaves Wow.exe's memory untouched, as everything else in MoBetta does
+- The build marks mtld3d's `d3d9.dll` as a Wine builtin. Without the mark, Wine skips it and quietly loads the stock `d3d9.dll`
+- Result in WoW 3.3.5a (Shadowglen, windowed, one run each): **106-116 -> ~170 FPS** in a light view (often 180), **60-80 -> ~140 FPS** in the heaviest view (the inn; max 151). In window mode the title bar is no longer transparent, and the cursor no longer flickers between the Mac and game cursors while turning the camera with the right mouse button
+- Not in the engine package yet. Tested in a wrapper by hand; packaging comes next
+
+### Fixed
+- **45 s black or choppy title screen at startup, and a ~20 s freeze on maximize**, with mtld3d. They came from mtld3d's HDR output (an EDR layer on macOS). While macOS ramps the display's HDR brightness, Wine's desktop process keeps reloading the display list every ~250 ms, and the game waits on it until the ramp ends. Running mtld3d with `color.hdr.enable=false` (in `MTLD3D_CONFIG`) brings the first frame in 2 s after start and removes the freeze. WoW 3.3.5a has no HDR content, so colors look the same, and the frame rate is equal or slightly higher
+
 ## 2026-10-27 - Faster GL buffer mapping
 
 ### Changed
