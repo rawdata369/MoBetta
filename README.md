@@ -1,6 +1,6 @@
 # MoBetta
 
-Custom Wine engine for running World of Warcraft 3.3.5a (WotLK) on Apple Silicon Macs.
+Custom Wine engine for running World of Warcraft 3.3.5a (WotLK) on Apple Silicon Macs. It might work for other old 32-bit games too, but only 3.3.5a has been tested (see [Requirements](#requirements)).
 
 ## The Problem
 
