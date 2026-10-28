@@ -25,6 +25,42 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 
 **Key constraint:** No game file modifications, nothing injected into the game process. This engine is designed for use with servers that run anti-cheat systems. A SHA-256 baseline of the game folder is checked before and after every test.
 
+## Performance
+
+In game with the v1.0.0 engine on a MacBook M3, windowed, FPS from the in-game counter (Ctrl+R). Shattrath and Booty Bay in the rain run lowest.
+
+| Place | FPS |
+|-------|-----|
+| Loch Modan, Valley of Kings (Ironforge gate) | 191 |
+| Stormwind, Trade District | 155 |
+| Duskwood | 149 |
+| Orgrimmar, Valley of Strength | 138 |
+| Durotar, zeppelin tower | 135 |
+| Howling Fjord, Kamagua | 135 |
+| Booty Bay, rain | 97 |
+| Shattrath City | 86 |
+
+<table>
+  <tr>
+    <td><a href="docs/screenshots/loch-modan.jpg"><img src="docs/screenshots/loch-modan.jpg" alt="Loch Modan, 191 FPS"></a><br>Loch Modan, 191 FPS</td>
+    <td><a href="docs/screenshots/stormwind.jpg"><img src="docs/screenshots/stormwind.jpg" alt="Stormwind, 155 FPS"></a><br>Stormwind, 155 FPS</td>
+  </tr>
+  <tr>
+    <td><a href="docs/screenshots/duskwood.jpg"><img src="docs/screenshots/duskwood.jpg" alt="Duskwood, 149 FPS"></a><br>Duskwood, 149 FPS</td>
+    <td><a href="docs/screenshots/orgrimmar.jpg"><img src="docs/screenshots/orgrimmar.jpg" alt="Orgrimmar, 138 FPS"></a><br>Orgrimmar, 138 FPS</td>
+  </tr>
+  <tr>
+    <td><a href="docs/screenshots/durotar.jpg"><img src="docs/screenshots/durotar.jpg" alt="Durotar, 135 FPS"></a><br>Durotar, 135 FPS</td>
+    <td><a href="docs/screenshots/howling-fjord.jpg"><img src="docs/screenshots/howling-fjord.jpg" alt="Howling Fjord, 135 FPS"></a><br>Howling Fjord, 135 FPS</td>
+  </tr>
+  <tr>
+    <td><a href="docs/screenshots/booty-bay.jpg"><img src="docs/screenshots/booty-bay.jpg" alt="Booty Bay, 97 FPS"></a><br>Booty Bay, 97 FPS</td>
+    <td><a href="docs/screenshots/shattrath.jpg"><img src="docs/screenshots/shattrath.jpg" alt="Shattrath City, 86 FPS"></a><br>Shattrath City, 86 FPS</td>
+  </tr>
+</table>
+
+Chat and character names are blurred in the screenshots.
+
 ## Status
 
 - [x] Phase 1: Confirm faulting instructions
