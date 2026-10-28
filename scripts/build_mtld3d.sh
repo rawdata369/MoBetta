@@ -65,6 +65,13 @@ for p in "$ROOT"/patches/mtld3d/*.patch; do
     git -C "$SRC" apply "$p"
 done
 
+# BUILD_DIR is one path for every user on the Mac (the hashes depend on it): a tree left by
+# another user cannot be written, so say so instead of failing inside rsync or cargo
+if [ -e "$BUILD_DIR" ] && [ ! -O "$BUILD_DIR" ]; then
+    echo "$BUILD_DIR belongs to $(stat -f %Su "$BUILD_DIR"), not you: that user (or an admin) has to"
+    echo "remove it first. mtld3d builds there whoever runs this, so the output matches the release"
+    exit 1
+fi
 if [ "$1" = "--clean" ]; then
     rm -rf "$BUILD_DIR"
 fi

@@ -12,6 +12,9 @@
 # updates when wine.inf's mtime differs from the prefix's .update-timestamp. wine.inf keeps stock
 # content with d3d9.dll's mtime, so the first start on this engine updates an existing prefix
 # (Session #14: without it, "Failed to find a suitable display device").
+# Wine's LGPL text (share/doc/wine/COPYING.LIB, from the CrossOver source tree) and
+# package/SOURCE.txt (share/doc/mobetta/SOURCE: what changed, where the source is) go in for the
+# LGPL; the stock engine carries neither.
 # Everything else is byte-for-byte stock.
 # Same format as stock: ENGINE.tar.7z holding ENGINE.tar holding wswine.bundle/.
 # The tar keeps stock's entry order and mtimes, so the output is reproducible.
@@ -43,6 +46,9 @@ MTLD3D_DLL_SHA256="841a81e22abe1160ccbf5e9aab4259acec6feb2ed6ee3d36a976e4106d960
 MTLD3D_SO_SHA256="572c0a5ed993757416817014861a7a45b70bb95a885f381082117a099ce81457"
 MTLD3D_LICENSE="$ROOT/build/mtld3d/LICENSE"
 MTLD3D_LICENSE_SHA256="34218a98a2bc21b4624a0bd755d47d5fd0f4478090a3139cc1da887849dccb27"
+WINE_LICENSE="$ROOT/build/src/sources/wine/COPYING.LIB"
+WINE_LICENSE_SHA256="e237fa56668030e928551ddd60f05df5fe957f75eab874bbd017e085ed722e7c"
+SOURCE_NOTE="$ROOT/package/SOURCE.txt"
 
 OUT="$ROOT/build/engine"
 STAGE="$OUT/stage"
@@ -74,6 +80,7 @@ verify_sha256 "$MTLD3D_OUT/i386-windows/d3d9.dll" "$D3D9_SHA256"
 verify_sha256 "$MTLD3D_OUT/i386-windows/mtld3d.dll" "$MTLD3D_DLL_SHA256"
 verify_sha256 "$MTLD3D_OUT/x86_64-unix/mtld3d.so" "$MTLD3D_SO_SHA256"
 verify_sha256 "$MTLD3D_LICENSE" "$MTLD3D_LICENSE_SHA256"
+verify_sha256 "$WINE_LICENSE" "$WINE_LICENSE_SHA256"
 
 # Stock engine, unpacked
 rm -rf "$OUT"
@@ -124,6 +131,11 @@ touch -m -t "$unix_stamp" "$BUNDLE/lib/wine/x86_64-unix"
 mkdir -p "$BUNDLE/share/doc/mtld3d"
 install -m 644 "$MTLD3D_LICENSE" "$BUNDLE/share/doc/mtld3d/LICENSE"
 touch -m -t "$d3d9_stamp" "$BUNDLE/share/doc/mtld3d/LICENSE" "$BUNDLE/share/doc/mtld3d"
+mkdir -p "$BUNDLE/share/doc/wine" "$BUNDLE/share/doc/mobetta"
+install -m 644 "$WINE_LICENSE" "$BUNDLE/share/doc/wine/COPYING.LIB"
+install -m 644 "$SOURCE_NOTE" "$BUNDLE/share/doc/mobetta/SOURCE"
+touch -m -t "$ntdll_stamp" "$BUNDLE/share/doc/wine/COPYING.LIB" "$BUNDLE/share/doc/wine" \
+    "$BUNDLE/share/doc/mobetta/SOURCE" "$BUNDLE/share/doc/mobetta"
 touch -m -t "$ntdll_stamp" "$BUNDLE/share/doc"
 touch -m -t "$share_stamp" "$BUNDLE/share"
 cat >> "$OUT/entries.txt" <<EOF2
@@ -133,6 +145,10 @@ wswine.bundle/share/doc/x87sidecar/
 wswine.bundle/share/doc/x87sidecar/LICENSE
 wswine.bundle/share/doc/mtld3d/
 wswine.bundle/share/doc/mtld3d/LICENSE
+wswine.bundle/share/doc/wine/
+wswine.bundle/share/doc/wine/COPYING.LIB
+wswine.bundle/share/doc/mobetta/
+wswine.bundle/share/doc/mobetta/SOURCE
 wswine.bundle/$MTLD3D_DLL
 wswine.bundle/$MTLD3D_SO
 EOF2
@@ -145,13 +161,13 @@ touch -m -t "$ntdll_stamp" "$OUT/$ENGINE.tar"
 (cd "$OUT" && 7zz a -t7z -m0=lzma2 -mx=9 -mmt=4 -bd "$ENGINE.tar.7z" "$ENGINE.tar" > /dev/null)
 
 # Check: every stock file's content is unchanged except ntdll.so, opengl32.so, d3d9.dll and
-# version; x87sidecar, mtld3d.dll, mtld3d.so and the two LICENSEs are new
+# version; x87sidecar, mtld3d.dll, mtld3d.so, the licenses and SOURCE are new
 sums() { (cd "$1" && find . -type f -print0 | sort -z | xargs -0 shasum -a 256); }
 mkdir -p "$OUT/check/stock" "$OUT/check/ours"
 7zz x -so "$STOCK_ARCHIVE" | tar -xf - -C "$OUT/check/stock"
 7zz x -so "$OUT/$ENGINE.tar.7z" | tar -xf - -C "$OUT/check/ours"
 changed=$(diff <(sums "$OUT/check/stock") <(sums "$OUT/check/ours") | grep '^>' | awk '{print $3}' | LC_ALL=C sort | tr '\n' ' ')
-expected="./wswine.bundle/bin/x87sidecar ./wswine.bundle/$D3D9 ./wswine.bundle/$MTLD3D_DLL ./wswine.bundle/$MTLD3D_SO ./wswine.bundle/$NTDLL ./wswine.bundle/$OPENGL32 ./wswine.bundle/share/doc/mtld3d/LICENSE ./wswine.bundle/share/doc/x87sidecar/LICENSE ./wswine.bundle/version "
+expected="./wswine.bundle/bin/x87sidecar ./wswine.bundle/$D3D9 ./wswine.bundle/$MTLD3D_DLL ./wswine.bundle/$MTLD3D_SO ./wswine.bundle/$NTDLL ./wswine.bundle/$OPENGL32 ./wswine.bundle/share/doc/mobetta/SOURCE ./wswine.bundle/share/doc/mtld3d/LICENSE ./wswine.bundle/share/doc/wine/COPYING.LIB ./wswine.bundle/share/doc/x87sidecar/LICENSE ./wswine.bundle/version "
 if [ "$changed" != "$expected" ]; then
     echo "Unexpected changes vs stock: $changed"
     exit 1

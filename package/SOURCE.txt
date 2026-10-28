@@ -1,0 +1,27 @@
+MoBetta engine (WS12WineCX26.3_Mobetta) - where the source is
+
+This engine is Porting Kit's WS12WineCX26.3_DXMT engine with these files changed or added:
+
+  lib/wine/x86_64-unix/ntdll.so      Wine, built with MoBetta's patches (LGPL 2.1 or later)
+  lib/wine/x86_64-unix/opengl32.so   Wine, built with MoBetta's patches (LGPL 2.1 or later)
+  lib/wine/i386-windows/d3d9.dll     mtld3d, built with MoBetta's patches (Zlib)
+  lib/wine/i386-windows/mtld3d.dll   mtld3d (Zlib)
+  lib/wine/x86_64-unix/mtld3d.so     mtld3d (Zlib)
+  bin/x87sidecar                     x87sidecar (MIT)
+  share/doc/                         these notices and licenses
+  version                            engine name
+
+Every other file is unchanged from WS12WineCX26.3_DXMT.
+
+Source:
+  MoBetta (patches and build scripts)  https://github.com/rawdata369/MoBetta
+  Wine (CrossOver 26.3.0)              https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz
+                                       SHA-256 ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872
+  mtld3d v0.15.1                       https://github.com/athei/mtld3d (commit 9919759fa7c03362deac1b985db6d93de9e33ecf)
+  x87sidecar                           https://github.com/athei/x87sidecar (commit 499e0f7e60d2961d379df459dd96bc79ecfe59fd)
+
+MoBetta's scripts/build_engine.sh downloads these, applies the patches and
+rebuilds this engine byte for byte.
+
+Licenses: share/doc/wine/COPYING.LIB (Wine, LGPL 2.1), share/doc/mtld3d/LICENSE,
+share/doc/x87sidecar/LICENSE.
