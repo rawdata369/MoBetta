@@ -3,6 +3,7 @@
 #
 # Runs the whole chain from a fresh clone, each step checked against its pinned SHA-256:
 #   build_opengl32.sh (runs build_ntdll.sh): ntdll.so, opengl32.so
+#   build_user32.sh: user32.dll (i386)
 #   build_x87sidecar.sh: x87sidecar
 #   build_mtld3d.sh: d3d9.dll, mtld3d.dll, mtld3d.so
 #   package_engine.sh: WS12WineCX26.3_Mobetta.tar.7z
@@ -10,7 +11,7 @@
 # Downloads (CrossOver source, llvm-mingw, x87sidecar and mtld3d repos, xwin CRT/SDK,
 # cargo crates) land in build/ and the cargo home; each is pinned by hash or commit.
 #
-# Requires: Xcode Command Line Tools (Apple clang 21.0.0, clang-2100.3.34.2: see
+# Requires: Xcode Command Line Tools (Apple clang 21.0.0, clang-2100.4.1.1: see
 # build_x87sidecar.sh), ARM Homebrew bison, cmake, sevenzip, gh (logged in), rustup
 # (stable >= 1.99 with llvm-tools, targets i686-pc-windows-msvc and x86_64-apple-darwin),
 # cargo-installed xwin, and the stock WS12WineCX26.3_DXMT engine (Wineskin's engine list)
@@ -21,7 +22,7 @@ set -e
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-ENGINE_SHA256="9bc8ec0626d050dcd0de110ced7ca331e62df0ab48211633cc0b5462807b5beb"
+ENGINE_SHA256="d683f50966e7dd4ef10b95a1db3774b695692d6993e9465307877afac269f4b5"
 
 CLEAN=
 if [ "$1" = "--clean" ]; then
@@ -43,14 +44,16 @@ done
 [ -f "$STOCK_ARCHIVE" ] || { echo "Stock engine not found: $STOCK_ARCHIVE"; exit 1; }
 clang_version=$(/usr/bin/clang --version | head -1)
 case "$clang_version" in
-    *"clang-2100.3.34.2"*) ;;
-    *) echo "Warning: $clang_version is not the pinned clang-2100.3.34.2; x87sidecar's hash may differ" ;;
+    *"clang-2100.4.1.1"*) ;;
+    *) echo "Warning: $clang_version is not the pinned clang-2100.4.1.1; x87sidecar's hash may differ" ;;
 esac
 
 step() { echo; echo "== $1"; }
 
 step "ntdll.so, opengl32.so"
 bash "$ROOT/scripts/build_opengl32.sh" $CLEAN "$STOCK_ARCHIVE"
+step "user32.dll"
+bash "$ROOT/scripts/build_user32.sh"
 step "x87sidecar"
 bash "$ROOT/scripts/build_x87sidecar.sh" $CLEAN
 step "mtld3d"

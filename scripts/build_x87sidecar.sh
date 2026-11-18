@@ -4,7 +4,7 @@
 # patches/0003 starts i386 processes under it from wine/bin/x87sidecar.
 # Output: build/out/x87sidecar (arm64, ad-hoc signed), checked against the pinned SHA-256.
 # The binary depends on the compiler: a different Xcode/CLT can change the hash
-# (pinned with Apple clang 21.0.0, clang-2100.3.34.2).
+# (pinned with Apple clang 21.0.0, clang-2100.4.1.1).
 #
 # Requires: Xcode Command Line Tools, cmake >= 3.27 (brew install cmake), git
 # Usage: bash scripts/build_x87sidecar.sh [--clean]
@@ -15,7 +15,7 @@ ROOT="$PWD"
 
 SIDECAR_URL="https://github.com/athei/x87sidecar.git"
 SIDECAR_COMMIT="499e0f7e60d2961d379df459dd96bc79ecfe59fd"
-SIDECAR_SHA256="881e9449565a9e2a823bfc517a30ef89d96a6388ae2f20a4dd5b7ab18058ea8e"
+SIDECAR_SHA256="e7739742086eabd5cfb8e2a02a213dc68aeb15492f16451a249ba223b8845ae9"
 
 SRC="$ROOT/build/x87sidecar"
 BUILD="$SRC/build"

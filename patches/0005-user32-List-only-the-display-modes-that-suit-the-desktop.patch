@@ -1,0 +1,224 @@
+MoBetta: user32: List only the display modes that suit the desktop.
+
+On a Mac, macOS reports every scaled and native mode of the display: 300
+sizes in 3600 modes on a 14" MacBook Pro, up to its native 3456x2234 while
+the desktop is 1970x1273. A program that builds a resolution menu from
+EnumDisplaySettings, such as WoW 3.3.5a, lists more sizes than fit on the
+screen (MoBetta Session #17).
+
+EnumDisplaySettingsExW now maps mode indices onto the sizes no larger than
+the registry mode, of its shape within 1%, at least 800 pixels wide, that
+win32u can scale onto the display (it aborts a mode-set whose monitor ratio
+does not fit in 16 bits), one per 10% step in width down from it; every depth
+and refresh rate of a kept size stays. ChangeDisplaySettings,
+ENUM_CURRENT_SETTINGS, ENUM_REGISTRY_SETTINGS and EDS_RAWMODE are unchanged.
+
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -610,9 +610,177 @@
+     }
+     if (lpszDeviceName) RtlFreeUnicodeString(&nameW);
+     return ret;
++}
++
++
++/* MoBetta: the display mode list a program enumerates.
++ *
++ * On a Mac, macOS reports every scaled and native mode of the display: 300
++ * sizes on a 14" MacBook Pro, up to its native 3456x2234 while the desktop is
++ * 1970x1273, in three or more shapes. A program that builds a resolution menu
++ * from EnumDisplaySettings (WoW 3.3.5a) gets a list taller than the screen.
++ * The mode indices a program enumerates map onto the sizes that suit the
++ * desktop: no larger than the registry (desktop) mode on either axis, of its
++ * shape within 1%, at least 800 pixels wide, one win32u can scale onto the
++ * display (it packs that ratio into 16 bits and aborts on a mode-set it
++ * cannot represent), and from the desktop down only one size per 10% step in
++ * width. Every bit depth and refresh rate of a kept size stays. The registry
++ * mode is the reference because a fullscreen mode-set does not change it, so
++ * the list stays the same while a game holds another mode. Only enumeration
++ * changes: ChangeDisplaySettings still accepts any mode the driver lists, and
++ * ENUM_CURRENT_SETTINGS, ENUM_REGISTRY_SETTINGS and EDS_RAWMODE pass
++ * through. */
++
++struct mobetta_size
++{
++    DWORD width;
++    DWORD height;
++};
++
++static SRWLOCK mobetta_modes_lock = SRWLOCK_INIT;
++static BOOL mobetta_modes_valid;
++static BOOL mobetta_modes_filtered;
++static WCHAR mobetta_modes_device[CCHDEVICENAME];
++static DWORD *mobetta_modes;
++static DWORD mobetta_modes_count;
++
++static BOOL mobetta_same_shape( DWORD width, DWORD height, DWORD ref_width, DWORD ref_height )
++{
++    ULONGLONG lhs = (ULONGLONG)width * ref_height, rhs = (ULONGLONG)height * ref_width;
++    ULONGLONG diff = lhs > rhs ? lhs - rhs : rhs - lhs;
++    return diff * 100 <= rhs;
++}
++
++/* win32u's monitor scale onto the physical size, dpi * physical / size reduced,
++ * must have a numerator below 0x10000 on each axis (mtld3d's monitor_ratio_fits). */
++static BOOL mobetta_axis_fits( DWORD size, DWORD physical, UINT dpi )
++{
++    ULONGLONG num = (ULONGLONG)dpi * physical, a = num, b = size, t;
++
++    if (!num || !size) return TRUE;
++    while (b)
++    {
++        t = a % b;
++        a = b;
++        b = t;
++    }
++    return num / a < 0x10000;
+ }
+ 
++static int __cdecl mobetta_size_cmp( const void *a, const void *b )
++{
++    const struct mobetta_size *x = a, *y = b;
++    /* widest first, then tallest */
++    if (x->width != y->width) return x->width < y->width ? 1 : -1;
++    if (x->height != y->height) return x->height < y->height ? 1 : -1;
++    return 0;
++}
+ 
++static BOOL mobetta_size_listed( const struct mobetta_size *sizes, DWORD count,
++                                 DWORD width, DWORD height )
++{
++    DWORD i;
++    for (i = 0; i < count; i++)
++        if (sizes[i].width == width && sizes[i].height == height) return TRUE;
++    return FALSE;
++}
++
++/* Called with mobetta_modes_lock held. Leaves the list unfiltered if anything fails. */
++static void mobetta_build_modes( UNICODE_STRING *str )
++{
++    DEVMODEW ref = {.dmSize = sizeof(ref)}, mode;
++    struct mobetta_size *all = NULL, *cand = NULL, *kept = NULL;
++    DWORD total = 0, capacity = 0, cand_count = 0, kept_count = 0, last_width, i;
++    DWORD physical_width, physical_height;
++    UINT dpi;
++
++    free( mobetta_modes );
++    mobetta_modes = NULL;
++    mobetta_modes_count = 0;
++    mobetta_modes_filtered = FALSE;
++    mobetta_modes_valid = TRUE;
++
++    if (!NtUserEnumDisplaySettings( str, ENUM_REGISTRY_SETTINGS, &ref, 0 )) return;
++    if (!ref.dmPelsWidth || !ref.dmPelsHeight) return;
++
++    for (;;)
++    {
++        memset( &mode, 0, sizeof(mode) );
++        mode.dmSize = sizeof(mode);
++        if (!NtUserEnumDisplaySettings( str, total, &mode, 0 )) break;
++        if (total == capacity)
++        {
++            struct mobetta_size *grown;
++            capacity = capacity ? capacity * 2 : 256;
++            if (!(grown = realloc( all, capacity * sizeof(*all) ))) goto done;
++            all = grown;
++        }
++        all[total].width = mode.dmPelsWidth;
++        all[total].height = mode.dmPelsHeight;
++        total++;
++    }
++    if (!total) goto done;
++
++    /* The physical size is the largest extent on each axis, as in mtld3d. */
++    physical_width = ref.dmPelsWidth;
++    physical_height = ref.dmPelsHeight;
++    for (i = 0; i < total; i++)
++    {
++        physical_width = max( physical_width, all[i].width );
++        physical_height = max( physical_height, all[i].height );
++    }
++    if (!(dpi = NtUserGetSystemDpiForProcess( NULL ))) dpi = USER_DEFAULT_SCREEN_DPI;
++
++    if (!(cand = malloc( total * sizeof(*cand) ))) goto done;
++    if (!(kept = malloc( (total + 1) * sizeof(*kept) ))) goto done;
++    if (!(mobetta_modes = malloc( total * sizeof(*mobetta_modes) ))) goto done;
++
++    for (i = 0; i < total; i++)
++    {
++        DWORD w = all[i].width, h = all[i].height;
++        if (w < 800 || !h || w > ref.dmPelsWidth || h > ref.dmPelsHeight) continue;
++        if (!mobetta_same_shape( w, h, ref.dmPelsWidth, ref.dmPelsHeight )) continue;
++        if (!mobetta_axis_fits( w, physical_width, dpi ) ||
++            !mobetta_axis_fits( h, physical_height, dpi )) continue;
++        if (mobetta_size_listed( cand, cand_count, w, h )) continue;
++        cand[cand_count++] = all[i];
++    }
++    qsort( cand, cand_count, sizeof(*cand), mobetta_size_cmp );
++
++    kept[kept_count].width = ref.dmPelsWidth;
++    kept[kept_count].height = ref.dmPelsHeight;
++    kept_count++;
++    last_width = ref.dmPelsWidth;
++    for (i = 0; i < cand_count; i++)
++    {
++        if ((ULONGLONG)cand[i].width * 100 > (ULONGLONG)last_width * 90) continue;
++        kept[kept_count++] = cand[i];
++        last_width = cand[i].width;
++    }
++
++    for (i = 0; i < total; i++)
++        if (mobetta_size_listed( kept, kept_count, all[i].width, all[i].height ))
++            mobetta_modes[mobetta_modes_count++] = i;
++
++    if (mobetta_modes_count)
++    {
++        mobetta_modes_filtered = TRUE;
++        TRACE( "%u of %u modes listed, %u sizes, desktop %ux%u\n", (UINT)mobetta_modes_count,
++               (UINT)total, (UINT)kept_count, (UINT)ref.dmPelsWidth, (UINT)ref.dmPelsHeight );
++    }
++
++done:
++    if (!mobetta_modes_filtered)
++    {
++        free( mobetta_modes );
++        mobetta_modes = NULL;
++        mobetta_modes_count = 0;
++    }
++    free( all );
++    free( cand );
++    free( kept );
++}
++
+ /***********************************************************************
+  *             EnumDisplaySettingsExW (USER32.@)
+  */
+@@ -620,8 +788,27 @@
+                                     DEVMODEW *dev_mode, DWORD flags )
+ {
+     UNICODE_STRING str;
++    const WCHAR *name = device ? device : L"";
++    BOOL filtered = FALSE, in_range = FALSE;
++    DWORD index = mode;
++
+     RtlInitUnicodeString( &str, device );
+-    return NtUserEnumDisplaySettings( &str, mode, dev_mode, flags );
++    /* ENUM_CURRENT_SETTINGS, ENUM_REGISTRY_SETTINGS and Wine's own negative indices */
++    if (mode >= 0xfffffff0 || (flags & EDS_RAWMODE))
++        return NtUserEnumDisplaySettings( &str, mode, dev_mode, flags );
++
++    AcquireSRWLockExclusive( &mobetta_modes_lock );
++    if (!mode || !mobetta_modes_valid || wcsnicmp( mobetta_modes_device, name, CCHDEVICENAME ))
++    {
++        lstrcpynW( mobetta_modes_device, name, CCHDEVICENAME );
++        mobetta_build_modes( &str );
++    }
++    if ((filtered = mobetta_modes_filtered) && (in_range = mode < mobetta_modes_count))
++        index = mobetta_modes[mode];
++    ReleaseSRWLockExclusive( &mobetta_modes_lock );
++
++    if (filtered && !in_range) return FALSE;
++    return NtUserEnumDisplaySettings( &str, index, dev_mode, flags );
+ }
+ 
+ static UINT get_ntuser_dpi_context( DPI_AWARENESS_CONTEXT context )

@@ -2,6 +2,14 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-18 - Short resolution list, rebuilt with the current Apple compiler
+
+### Fixed
+- **WoW's resolution list no longer runs off the screen** (`patches/0005`). macOS reports every scaled and native mode of a Mac display: 300 sizes on a 14" MacBook Pro, up to its native 3456x2234. Wine handed all of them to the game, and the Video settings dropdown overflowed. Wine's `user32.dll` now lists only sizes that fit on the desktop, match its shape, are at least 800 wide and that Wine can switch to in fullscreen, about one per 10% step: 6 sizes on that MacBook. Switching modes works as before; only the list is shorter. The engine now also replaces `lib/wine/i386-windows/user32.dll` (`scripts/build_user32.sh`)
+
+### Changed
+- **Pinned to Apple clang 2100.4.1.1** (macOS 27.2 Command Line Tools). The new compiler builds `ntdll.so`, `opengl32.so`, `x87sidecar` and `mtld3d.so` from the same sources to different bytes, so the reproducible build is pinned to it. Same frame rate as before. Engine SHA-256 `d683f50966e7dd4ef10b95a1db3774b695692d6993e9465307877afac269f4b5`
+
 ## 2026-10-28 - In-game FPS screenshots
 
 ### Added
