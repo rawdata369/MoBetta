@@ -2,6 +2,14 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-18 - Faster x87 math (v1.0.2)
+
+### Changed
+- **Up to ~15% more FPS where WoW does heavy x87 math** (`patches/x87sidecar/0001`). At ultra, WoW's main thread spends about 75% of its time in old x87 floating-point code, which Rosetta 2 hands to x87sidecar. Its hottest loop (box vs view frustum, `0x9839e0`) had integer shifts between x87 instructions, which broke x87sidecar's fast path into single slow steps. x87sidecar now carries an x87 run across `shl`/`shr`/`sar` by a constant when the flags are not used afterwards: that loop goes from 586 to 124 ARM instructions and runs 4.9x faster in a standalone test (`tests/x87_bridge_shift.c`), with bit-identical results. In game on a MacBook M3 at ultra, back to back on the same spot: 100-115 -> 120-130 FPS at an inn, 110-120 -> 120-130 outside. Engine SHA-256 `034eea94f365a98d7b984e2c58bfca0fef811e3352ca83d1192ec3cb70a924d8`
+
+### Fixed
+- **Updating instructions** in the README and the Porting Kit guide: after replacing the engine file, select `WS12WineCX26.3_Mobetta` again in Change Engine Used, even though it already shows as the current engine
+
 ## 2026-11-18 - Short resolution list, rebuilt with the current Apple compiler
 
 ### Fixed

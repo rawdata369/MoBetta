@@ -113,6 +113,8 @@ Setting up a new Porting Kit port for the game? Follow the [Porting Kit guide wi
    - With Wineskin Winery you can also pick the engine when you create a new wrapper
 5. Start the game as usual. The first start on this engine updates the wrapper's Wine prefix once, as after any engine change
 
+**Updating to a new MoBetta release:** every release has the same file name. Replace the old `WS12WineCX26.3_Mobetta.tar.7z` in `Engines` with the new one, quit the game, then in the wrapper's `Wineskin.app` click **Change Engine Used** again. It shows `WS12WineCX26.3_Mobetta` as the current engine: select it again from the list, and Wineskin rebuilds the wrapper's Wine from the new file. Just replacing the file changes nothing until you do this.
+
 To go back, change the engine to the one the wrapper had before (for a Porting Kit port, usually `WS12WineCX26.3_DXMT`).
 
 mtld3d writes its log to `drive_c/users/<user>/AppData/Local/mtld3d-logs/` in the prefix.

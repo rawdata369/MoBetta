@@ -104,4 +104,8 @@ For a port made with another engine, or one you already had:
 
 To go back, change the engine to the one the port had before (usually `WS12WineCX26.3_DXMT`).
 
+### Updating to a new MoBetta release
+
+Every release has the same file name, `WS12WineCX26.3_Mobetta.tar.7z`. Replace the old file in the Engines folder with the new one, quit the game, and do steps 2-5 again. **Change Engine Used** shows `WS12WineCX26.3_Mobetta` as the current engine already: select it again from the list, and Wineskin rebuilds the port's Wine from the new file. Just replacing the file changes nothing until you do this.
+
 MoBetta doesn't modify the game folder and doesn't inject anything into the game; all changes are in the Wine engine.
