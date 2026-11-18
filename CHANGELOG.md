@@ -2,6 +2,14 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-18 - Mouse-look fix (v1.0.3)
+
+### Fixed
+- **Mouse-look keeps the cursor inside the game window** (`patches/0006`, Wine's Mac display driver `winemac.so`). While you hold a mouse button to turn the camera, WoW hides the cursor and moves it back to the window's centre every frame. On a second display, that point could fall outside the window, so the hidden cursor sat over other apps and the frame rate dropped while dragging. The stock driver also showed an arrow where WoW asks for no cursor. Now the Mac cursor stays inside the window during mouse-look and the camera turns from relative mouse movement. Tested on a MacBook's built-in display and an external one. Engine SHA-256 `768d4a1ad254d9bae9155d33c4dc6b4f2add51adfdaa93a94956589698a32dda`
+
+### Known issue
+- **Fullscreen stutters.** The stock driver stutters in fullscreen too, worse than this one. Play windowed until this is fixed
+
 ## 2026-11-18 - Faster x87 math (v1.0.2)
 
 ### Changed

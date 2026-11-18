@@ -15,6 +15,9 @@
 # lib/wine/i386-windows/user32.dll replaced (build/out/user32.dll, patch 0005: the display
 # mode list EnumDisplaySettings enumerates). It needs no prefix update: the prefix's
 # syswow64/user32.dll is a builtin placeholder, and the loader takes the engine's.
+# lib/wine/x86_64-unix/winemac.so replaced (build/out/winemac.so, patch 0006: the hidden cursor
+# stays inside the window during mouse-look). Built from our CrossOver tree, so it also lacks
+# stock's extra Metal escape and fullscreen update, which nothing in this engine needs (DECISIONS.md #18).
 # Wine's LGPL text (share/doc/wine/COPYING.LIB, from the CrossOver source tree) and
 # package/SOURCE.txt (share/doc/mobetta/SOURCE: what changed, where the source is) go in for the
 # LGPL; the stock engine carries neither.
@@ -23,7 +26,7 @@
 # The tar keeps stock's entry order and mtimes, so the output is reproducible.
 #
 # Requires: 7-Zip (brew install sevenzip), build_opengl32.sh (runs build_ntdll.sh),
-# build_user32.sh, build_x87sidecar.sh and build_mtld3d.sh run first
+# build_winemac.sh, build_user32.sh, build_x87sidecar.sh and build_mtld3d.sh run first
 # Usage: bash scripts/package_engine.sh [path/to/WS12WineCX26.3_DXMT.tar.7z]
 # Output: build/engine/WS12WineCX26.3_Mobetta.tar.7z
 
@@ -39,6 +42,8 @@ STOCK_NTDLL_SHA256="f4a653b12f142fe601253d764288260ce63e0620ca092dfb99ef8ffc41aa
 NTDLL_SHA256="91ecefb778c17bfb7d157093c7c4e4ffc6a0e2ba271b63223a84c5ad9995cedf"
 STOCK_OPENGL32_SHA256="4571b05c840e7d0f49d87b11eeba2ce08391af713bcf689a19f6af25fac45c3a"
 OPENGL32_SHA256="4d0178eae748a61c61d89c3db67eda31aaf38d7417bcd7fcbf81af71ebf35428"
+STOCK_WINEMAC_SHA256="2e9d3f8cbf9842a6286a5605c0f2077a32043550ab1b5040af62ff53f0f95c56"
+WINEMAC_SHA256="3a7b5f4e46c1a5f0633461a76b1611d20d5e32a76a18ead3c1ced556ca19c07c"
 SIDECAR_SHA256="6a37a6937f6b562d376a7009460a1ba276236a72ec2d4278401eb708e796830b"
 SIDECAR_LICENSE="$ROOT/build/x87sidecar/LICENSE"
 SIDECAR_LICENSE_SHA256="b0c3f8090dbc91b3583d826944ac0570483a42407d7008c9746f943578e5d9cd"
@@ -60,6 +65,7 @@ STAGE="$OUT/stage"
 BUNDLE="$STAGE/wswine.bundle"
 NTDLL="lib/wine/x86_64-unix/ntdll.so"
 OPENGL32="lib/wine/x86_64-unix/opengl32.so"
+WINEMAC="lib/wine/x86_64-unix/winemac.so"
 D3D9="lib/wine/i386-windows/d3d9.dll"
 USER32="lib/wine/i386-windows/user32.dll"
 MTLD3D_DLL="lib/wine/i386-windows/mtld3d.dll"
@@ -80,6 +86,7 @@ command -v 7zz > /dev/null || { echo "7zz not found (brew install sevenzip)"; ex
 verify_sha256 "$STOCK_ARCHIVE" "$STOCK_SHA256"
 verify_sha256 "$ROOT/build/out/ntdll.so" "$NTDLL_SHA256"
 verify_sha256 "$ROOT/build/out/opengl32.so" "$OPENGL32_SHA256"
+verify_sha256 "$ROOT/build/out/winemac.so" "$WINEMAC_SHA256"
 verify_sha256 "$ROOT/build/out/user32.dll" "$USER32_SHA256"
 verify_sha256 "$ROOT/build/out/x87sidecar" "$SIDECAR_SHA256"
 verify_sha256 "$SIDECAR_LICENSE" "$SIDECAR_LICENSE_SHA256"
@@ -96,6 +103,7 @@ mkdir -p "$STAGE"
 7zz x -so "$STOCK_ARCHIVE" | tar -tf - > "$OUT/entries.txt"
 verify_sha256 "$BUNDLE/$NTDLL" "$STOCK_NTDLL_SHA256"
 verify_sha256 "$BUNDLE/$OPENGL32" "$STOCK_OPENGL32_SHA256"
+verify_sha256 "$BUNDLE/$WINEMAC" "$STOCK_WINEMAC_SHA256"
 verify_sha256 "$BUNDLE/$D3D9" "$STOCK_D3D9_SHA256"
 verify_sha256 "$BUNDLE/$USER32" "$STOCK_USER32_SHA256"
 
@@ -105,6 +113,7 @@ stamp() { date -r "$(stat -f %m "$1")" +%Y%m%d%H%M.%S; }
 bin_stamp=$(stamp "$BUNDLE/bin")
 ntdll_stamp=$(stamp "$BUNDLE/$NTDLL")
 opengl32_stamp=$(stamp "$BUNDLE/$OPENGL32")
+winemac_stamp=$(stamp "$BUNDLE/$WINEMAC")
 version_stamp=$(stamp "$BUNDLE/version")
 share_stamp=$(stamp "$BUNDLE/share")
 d3d9_stamp=$(stamp "$BUNDLE/$D3D9")
@@ -119,6 +128,9 @@ chmod 755 "$BUNDLE/$NTDLL" "$BUNDLE/$OPENGL32" "$BUNDLE/bin/x87sidecar"
 printf '%s\n' "$ENGINE" > "$BUNDLE/version"
 touch -m -t "$ntdll_stamp" "$BUNDLE/$NTDLL" "$BUNDLE/bin/x87sidecar"
 touch -m -t "$opengl32_stamp" "$BUNDLE/$OPENGL32"
+cp "$ROOT/build/out/winemac.so" "$BUNDLE/$WINEMAC"
+chmod 755 "$BUNDLE/$WINEMAC"
+touch -m -t "$winemac_stamp" "$BUNDLE/$WINEMAC"
 touch -m -t "$version_stamp" "$BUNDLE/version"
 touch -m -t "$bin_stamp" "$BUNDLE/bin"
 mkdir -p "$BUNDLE/share/doc/x87sidecar"
@@ -172,14 +184,14 @@ EOF2
 touch -m -t "$ntdll_stamp" "$OUT/$ENGINE.tar"
 (cd "$OUT" && 7zz a -t7z -m0=lzma2 -mx=9 -mmt=4 -bd "$ENGINE.tar.7z" "$ENGINE.tar" > /dev/null)
 
-# Check: every stock file's content is unchanged except ntdll.so, opengl32.so, d3d9.dll,
+# Check: every stock file's content is unchanged except ntdll.so, opengl32.so, winemac.so, d3d9.dll,
 # user32.dll and version; x87sidecar, mtld3d.dll, mtld3d.so, the licenses and SOURCE are new
 sums() { (cd "$1" && find . -type f -print0 | sort -z | xargs -0 shasum -a 256); }
 mkdir -p "$OUT/check/stock" "$OUT/check/ours"
 7zz x -so "$STOCK_ARCHIVE" | tar -xf - -C "$OUT/check/stock"
 7zz x -so "$OUT/$ENGINE.tar.7z" | tar -xf - -C "$OUT/check/ours"
 changed=$(diff <(sums "$OUT/check/stock") <(sums "$OUT/check/ours") | grep '^>' | awk '{print $3}' | LC_ALL=C sort | tr '\n' ' ')
-expected="./wswine.bundle/bin/x87sidecar ./wswine.bundle/$D3D9 ./wswine.bundle/$MTLD3D_DLL ./wswine.bundle/$USER32 ./wswine.bundle/$MTLD3D_SO ./wswine.bundle/$NTDLL ./wswine.bundle/$OPENGL32 ./wswine.bundle/share/doc/mobetta/SOURCE ./wswine.bundle/share/doc/mtld3d/LICENSE ./wswine.bundle/share/doc/wine/COPYING.LIB ./wswine.bundle/share/doc/x87sidecar/LICENSE ./wswine.bundle/version "
+expected="./wswine.bundle/bin/x87sidecar ./wswine.bundle/$D3D9 ./wswine.bundle/$MTLD3D_DLL ./wswine.bundle/$USER32 ./wswine.bundle/$MTLD3D_SO ./wswine.bundle/$NTDLL ./wswine.bundle/$OPENGL32 ./wswine.bundle/$WINEMAC ./wswine.bundle/share/doc/mobetta/SOURCE ./wswine.bundle/share/doc/mtld3d/LICENSE ./wswine.bundle/share/doc/wine/COPYING.LIB ./wswine.bundle/share/doc/x87sidecar/LICENSE ./wswine.bundle/version "
 if [ "$changed" != "$expected" ]; then
     echo "Unexpected changes vs stock: $changed"
     exit 1

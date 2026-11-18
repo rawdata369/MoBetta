@@ -3,6 +3,7 @@
 #
 # Runs the whole chain from a fresh clone, each step checked against its pinned SHA-256:
 #   build_opengl32.sh (runs build_ntdll.sh): ntdll.so, opengl32.so
+#   build_winemac.sh: winemac.so
 #   build_user32.sh: user32.dll (i386)
 #   build_x87sidecar.sh: x87sidecar
 #   build_mtld3d.sh: d3d9.dll, mtld3d.dll, mtld3d.so
@@ -22,7 +23,7 @@ set -e
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-ENGINE_SHA256="034eea94f365a98d7b984e2c58bfca0fef811e3352ca83d1192ec3cb70a924d8"
+ENGINE_SHA256="768d4a1ad254d9bae9155d33c4dc6b4f2add51adfdaa93a94956589698a32dda"
 
 CLEAN=
 if [ "$1" = "--clean" ]; then
@@ -52,6 +53,9 @@ step() { echo; echo "== $1"; }
 
 step "ntdll.so, opengl32.so"
 bash "$ROOT/scripts/build_opengl32.sh" $CLEAN "$STOCK_ARCHIVE"
+step "winemac.so"
+# No --clean: build_opengl32.sh just cleaned and rebuilt the tree it shares
+bash "$ROOT/scripts/build_winemac.sh" "$STOCK_ARCHIVE"
 step "user32.dll"
 bash "$ROOT/scripts/build_user32.sh"
 step "x87sidecar"

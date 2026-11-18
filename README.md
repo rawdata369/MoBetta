@@ -119,6 +119,8 @@ To go back, change the engine to the one the wrapper had before (for a Porting K
 
 mtld3d writes its log to `drive_c/users/<user>/AppData/Local/mtld3d-logs/` in the prefix.
 
+**Known issue:** the game stutters in fullscreen (the stock engine does too). Play windowed for now.
+
 ## Building
 
 The release engine can be rebuilt from source and compared with the download. Requires Xcode Command Line Tools (the release is pinned with Apple clang 2100.4.1.1; another version builds different bytes), Homebrew (`bison`, `cmake`, `sevenzip`, `gh`, logged in), rustup (stable, targets `i686-pc-windows-msvc` and `x86_64-apple-darwin`, `llvm-tools`) with `cargo install --locked xwin`, plus the stock engine `WS12WineCX26.3_DXMT.tar.7z` (SHA-256 `7b3f383a2209de5765eef45f1d6fc316682cfcfbb3518d7470e4b51f00e7cd08`) in Wineskin's Engines folder. Porting Kit downloads it there when a port is set up with that engine.
@@ -127,7 +129,7 @@ The release engine can be rebuilt from source and compared with the download. Re
 bash scripts/build_engine.sh       # -> build/engine/WS12WineCX26.3_Mobetta.tar.7z
 ```
 
-It downloads the sources (each pinned by hash or commit), builds Wine's `ntdll.so`, `opengl32.so` and 32-bit `user32.dll` with `patches/` applied, x87sidecar and mtld3d, packages the engine, and checks it against the release SHA-256 in [`SHA256SUMS`](SHA256SUMS). The build gives the same bytes in any directory. The steps also run on their own: `build_opengl32.sh`, `build_user32.sh`, `build_x87sidecar.sh`, `build_mtld3d.sh`, `package_engine.sh`. mtld3d always builds in `/private/tmp/mobetta-mtld3d`, because its output depends on the build path; on a Mac with several users, only one of them can build there at a time.
+It downloads the sources (each pinned by hash or commit), builds Wine's `ntdll.so`, `opengl32.so`, `winemac.so` and 32-bit `user32.dll` with `patches/` applied, x87sidecar and mtld3d, packages the engine, and checks it against the release SHA-256 in [`SHA256SUMS`](SHA256SUMS). The build gives the same bytes in any directory. The steps also run on their own: `build_opengl32.sh`, `build_user32.sh`, `build_x87sidecar.sh`, `build_mtld3d.sh`, `package_engine.sh`. mtld3d always builds in `/private/tmp/mobetta-mtld3d`, because its output depends on the build path; on a Mac with several users, only one of them can build there at a time.
 
 ## Tests
 
@@ -155,7 +157,7 @@ The engine package contains:
 
 | Part | License | Source |
 |------|---------|--------|
-| Wine (CrossOver 26.3.0), with `patches/` in `ntdll.so`, `opengl32.so` and `user32.dll` | LGPL 2.1 or later (`share/doc/wine/COPYING.LIB`) | [crossover-sources-26.3.0.tar.gz](https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz) + [`patches/`](patches) |
+| Wine (CrossOver 26.3.0), with `patches/` in `ntdll.so`, `opengl32.so`, `winemac.so` and `user32.dll` | LGPL 2.1 or later (`share/doc/wine/COPYING.LIB`) | [crossover-sources-26.3.0.tar.gz](https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz) + [`patches/`](patches) |
 | mtld3d v0.15.1, with `patches/mtld3d/` | Zlib (`share/doc/mtld3d/LICENSE`) | [athei/mtld3d](https://github.com/athei/mtld3d) + [`patches/mtld3d/`](patches/mtld3d) |
 | x87sidecar | MIT (`share/doc/x87sidecar/LICENSE`) | [athei/x87sidecar](https://github.com/athei/x87sidecar) |
 
