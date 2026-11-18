@@ -1,0 +1,46 @@
+MoBetta: winemac.drv: Keep mouse-look under a clip rect that holds the window.
+
+Mouse-look (0006) stood aside whenever the cursor was clipped. WoW 3.3.5a
+clips the cursor to its monitor when it goes fullscreen and does not release
+it on going back to windowed, so from the first fullscreen on every camera
+drag took the old path: a CGWarpMouseCursorPosition per frame and absolute
+moves, ~50 warps/s against ~78/s before fullscreen in the same session, felt
+as a chop while dragging (MoBetta Session #23, +cursor trace).
+
+Mouse-look now also detaches while clipping with the confinement handler when
+the clip rect holds the capture window's content rect: the detached cursor
+stays frozen inside the window, so the clip still holds. The event-tap
+handler warps the cursor itself and keeps the old rule.
+
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -1107,8 +1107,28 @@
+      * window on a display left of the main one, over other apps. */
+     - (BOOL) shouldDetachForMouseLook
+     {
+-        return clientWantsCursorHidden && mouseCaptureWindow && !self.clippingCursor &&
++        return clientWantsCursorHidden && mouseCaptureWindow && [self cursorClippingAllowsMouseLook] &&
+                ![windowsBeingDragged count] && [NSApp isActive];
++    }
++
++    /* MoBetta: a clip rect that holds the whole capture window is kept by
++     * mouse-look too, since the detached cursor stays frozen inside that
++     * window.  WoW 3.3.5a clips to its monitor in fullscreen and never
++     * releases it, which otherwise left mouse-look off for the rest of the
++     * session (the slow CGWarpMouseCursorPosition path on every frame).  The
++     * event-tap handler warps the cursor itself, so it keeps the old rule. */
++    - (BOOL) cursorClippingAllowsMouseLook
++    {
++        NSRect contentRect;
++
++        if (!self.clippingCursor)
++            return TRUE;
++        if ([clipCursorHandler respondsToSelector:@selector(setCursorPosition:)])
++            return FALSE;
++
++        contentRect = [mouseCaptureWindow contentRectForFrameRect:[mouseCaptureWindow frame]];
++        [self flipRect:&contentRect];
++        return CGRectContainsRect(clipCursorHandler.cursorClipRect, NSRectToCGRect(contentRect));
+     }
+ 
+     - (BOOL) startMouseLook

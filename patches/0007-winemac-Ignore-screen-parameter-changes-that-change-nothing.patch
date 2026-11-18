@@ -1,0 +1,121 @@
+MoBetta: winemac.drv: Ignore screen-parameter changes that change nothing.
+
+macOS posts NSApplicationDidChangeScreenParametersNotification whenever a
+display's EDR headroom moves, which auto-brightness does every few seconds
+on an XDR panel, most of all with a fullscreen window up. winemac turned each
+one into DISPLAYS_CHANGED; explorer's desktop thread then ran
+display_mode_changed -> macdrv_UpdateDisplayDevices under the display device
+lock, enumerating every mode, at ~95% of a core, while other threads waited
+on that lock (monitor_dpi_from_rect in message handling). Each one also reset
+relative mouse movement. In WoW 3.3.5a this showed as a chop that starts some
+seconds after going fullscreen, stays after going back to windowed, and makes
+mouse-look camera turns choppy (MoBetta Session #23).
+
+The handler now snapshots what Wine reads from the displays (active display
+IDs, mirroring, bounds and current mode; each screen's frame, visible frame
+and backing scale) and returns early when it equals the last one. A real
+change (display added or removed, resolution, arrangement, Dock or menu bar)
+still goes through as before; the activation path is unchanged.
+
+--- a/dlls/winemac.drv/cocoa_app.h
++++ b/dlls/winemac.drv/cocoa_app.h
+@@ -60,6 +60,7 @@
+     CGFloat primaryScreenHeight;
+     BOOL primaryScreenHeightValid;
+     NSMutableData* screenFrameCGRects;
++    NSData* lastDisplayState;
+ 
+     WineWindow* lastTargetWindow;
+     WineWindow* mouseCaptureWindow;
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -218,6 +218,7 @@
+         [windowsBeingDragged release];
+         [cursor release];
+         [screenFrameCGRects release];
++        [lastDisplayState release];
+         [applicationIcon release];
+         [clipCursorHandler release];
+         [cursorTimer release];
+@@ -2548,10 +2549,81 @@
+         // movement deltas are invalidated.  Make sure the next mouse move event
+         // starts over from an absolute baseline.
+         forceNextMouseMoveAbsolute = TRUE;
++    }
++
++    /* What Wine's display devices, desktop rect and window levels are built
++       from: each active display's ID, mirroring, bounds and current mode,
++       and each screen's frame, visible frame and backing scale. */
++    - (NSData*) displayStateSnapshot
++    {
++        NSMutableData* state = [NSMutableData data];
++        CGDirectDisplayID displays[32];
++        uint32_t count = 0, i;
++
++        if (CGGetActiveDisplayList(32, displays, &count) != kCGErrorSuccess)
++            return nil;
++
++#define APPEND_STATE(v) do { __typeof__(v) state_value = (v); [state appendBytes:&state_value length:sizeof(state_value)]; } while (0)
++        APPEND_STATE(count);
++        for (i = 0; i < count; i++)
++        {
++            CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displays[i]);
++            CGRect bounds = CGDisplayBounds(displays[i]);
++
++            APPEND_STATE(displays[i]);
++            APPEND_STATE(CGDisplayMirrorsDisplay(displays[i]));
++            APPEND_STATE(bounds.origin.x);
++            APPEND_STATE(bounds.origin.y);
++            APPEND_STATE(bounds.size.width);
++            APPEND_STATE(bounds.size.height);
++            if (mode)
++            {
++                APPEND_STATE(CGDisplayModeGetWidth(mode));
++                APPEND_STATE(CGDisplayModeGetHeight(mode));
++                APPEND_STATE(CGDisplayModeGetPixelWidth(mode));
++                APPEND_STATE(CGDisplayModeGetPixelHeight(mode));
++                APPEND_STATE(CGDisplayModeGetRefreshRate(mode));
++                APPEND_STATE(CGDisplayModeGetIOFlags(mode));
++                CGDisplayModeRelease(mode);
++            }
++            else
++                APPEND_STATE((size_t)0);
++        }
++
++        for (NSScreen* screen in [NSScreen screens])
++        {
++            NSRect frame = [screen frame], visible = [screen visibleFrame];
++
++            APPEND_STATE(frame.origin.x);
++            APPEND_STATE(frame.origin.y);
++            APPEND_STATE(frame.size.width);
++            APPEND_STATE(frame.size.height);
++            APPEND_STATE(visible.origin.x);
++            APPEND_STATE(visible.origin.y);
++            APPEND_STATE(visible.size.width);
++            APPEND_STATE(visible.size.height);
++            APPEND_STATE([screen backingScaleFactor]);
++        }
++#undef APPEND_STATE
++
++        return state;
+     }
+ 
+     - (void)applicationDidChangeScreenParameters:(NSNotification *)notification
+     {
++        NSData* state = [self displayStateSnapshot];
++
++        /* MoBetta: macOS also posts this notification when only a display's
++           EDR headroom changes, which auto-brightness does every few seconds
++           on XDR panels. Each one made the desktop thread rebuild every
++           display device under the display lock, stalling every thread that
++           takes it, and reset relative mouse movement. Ignore notifications
++           that leave everything Wine reads from the displays unchanged. */
++        if (state && lastDisplayState && [state isEqualToData:lastDisplayState])
++            return;
++        [lastDisplayState release];
++        lastDisplayState = [state retain];
++
+         primaryScreenHeightValid = FALSE;
+         [self sendDisplaysChanged:FALSE];
+         [self adjustWindowLevels];
