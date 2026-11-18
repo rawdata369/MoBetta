@@ -2,6 +2,12 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-18 - Fullscreen fix (v1.0.4)
+
+### Fixed
+- **Fullscreen no longer stutters** (`patches/0007`, `winemac.so`). With auto-brightness on, a Mac's built-in XDR display keeps adjusting its brightness headroom, most of all with a fullscreen window up, and macOS reports each step as a display change. Wine rebuilt its whole display list every time, keeping one of its processes at a full CPU core and stalling the game's threads. The stutter started some seconds after going fullscreen and stayed after going back to windowed. Wine now ignores these reports when nothing it uses from the displays changed; plugging in a display or changing the resolution still goes through
+- **Camera turning stays smooth after fullscreen** (`patches/0008`, `winemac.so`). In fullscreen WoW confines the cursor to its display and keeps that after going back to windowed, which switched the v1.0.3 mouse-look fix off for the rest of the session. Mouse-look now stays on while the confinement holds the whole game window. Engine SHA-256 `2554e0a29294dc5821dd3091c86b67607f78f506ef04988249a389554a2d17b0`
+
 ## 2026-11-18 - Mouse-look fix (v1.0.3)
 
 ### Fixed

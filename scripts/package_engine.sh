@@ -16,7 +16,9 @@
 # mode list EnumDisplaySettings enumerates). It needs no prefix update: the prefix's
 # syswow64/user32.dll is a builtin placeholder, and the loader takes the engine's.
 # lib/wine/x86_64-unix/winemac.so replaced (build/out/winemac.so, patch 0006: the hidden cursor
-# stays inside the window during mouse-look). Built from our CrossOver tree, so it also lacks
+# stays inside the window during mouse-look; 0007: screen-parameter notifications that change
+# nothing, such as EDR headroom moves, are ignored; 0008: mouse-look stays on under a cursor clip
+# that holds the window). Built from our CrossOver tree, so it also lacks
 # stock's extra Metal escape and fullscreen update, which nothing in this engine needs (DECISIONS.md #18).
 # Wine's LGPL text (share/doc/wine/COPYING.LIB, from the CrossOver source tree) and
 # package/SOURCE.txt (share/doc/mobetta/SOURCE: what changed, where the source is) go in for the
@@ -43,7 +45,7 @@ NTDLL_SHA256="91ecefb778c17bfb7d157093c7c4e4ffc6a0e2ba271b63223a84c5ad9995cedf"
 STOCK_OPENGL32_SHA256="4571b05c840e7d0f49d87b11eeba2ce08391af713bcf689a19f6af25fac45c3a"
 OPENGL32_SHA256="4d0178eae748a61c61d89c3db67eda31aaf38d7417bcd7fcbf81af71ebf35428"
 STOCK_WINEMAC_SHA256="2e9d3f8cbf9842a6286a5605c0f2077a32043550ab1b5040af62ff53f0f95c56"
-WINEMAC_SHA256="3a7b5f4e46c1a5f0633461a76b1611d20d5e32a76a18ead3c1ced556ca19c07c"
+WINEMAC_SHA256="5f3ec04fb74704a00101fa349857f73ea1593c4a05d57b3cd5fc687537f1f9bc"
 SIDECAR_SHA256="6a37a6937f6b562d376a7009460a1ba276236a72ec2d4278401eb708e796830b"
 SIDECAR_LICENSE="$ROOT/build/x87sidecar/LICENSE"
 SIDECAR_LICENSE_SHA256="b0c3f8090dbc91b3583d826944ac0570483a42407d7008c9746f943578e5d9cd"

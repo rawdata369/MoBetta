@@ -119,8 +119,6 @@ To go back, change the engine to the one the wrapper had before (for a Porting K
 
 mtld3d writes its log to `drive_c/users/<user>/AppData/Local/mtld3d-logs/` in the prefix.
 
-**Known issue:** the game stutters in fullscreen (the stock engine does too). Play windowed for now.
-
 ## Building
 
 The release engine can be rebuilt from source and compared with the download. Requires Xcode Command Line Tools (the release is pinned with Apple clang 2100.4.1.1; another version builds different bytes), Homebrew (`bison`, `cmake`, `sevenzip`, `gh`, logged in), rustup (stable, targets `i686-pc-windows-msvc` and `x86_64-apple-darwin`, `llvm-tools`) with `cargo install --locked xwin`, plus the stock engine `WS12WineCX26.3_DXMT.tar.7z` (SHA-256 `7b3f383a2209de5765eef45f1d6fc316682cfcfbb3518d7470e4b51f00e7cd08`) in Wineskin's Engines folder. Porting Kit downloads it there when a port is set up with that engine.
