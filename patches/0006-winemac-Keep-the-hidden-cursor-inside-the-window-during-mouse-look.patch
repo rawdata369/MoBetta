@@ -1,0 +1,293 @@
+MoBetta: winemac.drv: Keep the hidden cursor inside the window during mouse-look.
+
+WoW 3.3.5a turns the camera while a mouse button is held: it captures the
+mouse, hides the cursor with SetCursor(NULL) and every frame warps the cursor
+to (client origin + client size) / 2 instead of origin + size / 2. On Windows
+the hidden cursor's position is never seen. On a Mac display left of the main
+one that point lies ~1000 pixels outside the window, so the real, hidden Mac
+cursor sits over other apps (their toolbars light up) and the frame rate drops
+while dragging (MoBetta Session #20).
+
+While the client hides the cursor and holds mouse capture, SetCursorPos now
+moves only Wine's cursor position: the Mac cursor is detached from the mouse
+(CGAssociateMouseAndMouseCursorPosition, as cursor clipping does), frozen
+inside the capture window, and mouse movement reaches Wine as relative deltas.
+GetCursorPos keeps the server's position, and button and wheel events carry
+no position, while detached. Unhiding the cursor, releasing capture, cursor
+clipping, a window drag or deactivating the app reattaches the cursor.
+
+--- a/dlls/winemac.drv/cocoa_app.h
++++ b/dlls/winemac.drv/cocoa_app.h
+@@ -83,6 +83,7 @@
+     BOOL        cursorIsCurrent;
+     BOOL        cursorHidden;
+     BOOL        clientWantsCursorHidden;
++    BOOL        mouseLookDetached;
+ 
+     NSTimeInterval lastSetCursorPositionTime;
+ 
+@@ -110,6 +111,7 @@
+ @property (nonatomic, copy) NSString *explicitAppUserModelID;  /* CW Hack 22310 */
+ 
+ @property (readonly) BOOL clippingCursor;
++@property (readonly, nonatomic) BOOL mouseLookDetached;
+ @property (nonatomic) NSTimeInterval lastSetCursorPositionTime;
+ 
+     + (WineApplicationController*) sharedController;
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -135,6 +135,7 @@
+     @synthesize cursorFrames, cursorTimer, cursor;
+     @synthesize mouseCaptureWindow;
+     @synthesize lastSetCursorPositionTime;
++    @synthesize mouseLookDetached;
+     @synthesize explicitAppUserModelID;  /* CW Hack 22310 */
+ 
+     + (void) initialize
+@@ -1091,9 +1092,75 @@
+         {
+             clientWantsCursorHidden = FALSE;
+             [self updateCursor:FALSE];
++            [self updateMouseLook];
+         }
+     }
+ 
++    /* Mouse-look: while the client hides the cursor and holds mouse capture,
++     * its cursor warps (SetCursorPos) move only Wine's cursor position.  The
++     * Mac cursor is detached from the mouse and stays inside the capture
++     * window; mouse movement reaches Wine as relative deltas.  Windows hides
++     * the cursor in this state, so where the client warps it never shows
++     * there.  On the Mac, warping moves the real (hidden) cursor: WoW 3.3.5a
++     * warps to (origin + size) / 2 of its client area, which lies outside its
++     * window on a display left of the main one, over other apps. */
++    - (BOOL) shouldDetachForMouseLook
++    {
++        return clientWantsCursorHidden && mouseCaptureWindow && !self.clippingCursor &&
++               ![windowsBeingDragged count] && [NSApp isActive];
++    }
++
++    - (BOOL) startMouseLook
++    {
++        NSRect contentRect;
++
++        if (mouseLookDetached)
++            return TRUE;
++
++        // Freeze the cursor inside the capture window.
++        contentRect = [mouseCaptureWindow contentRectForFrameRect:[mouseCaptureWindow frame]];
++        if (!NSMouseInRect([NSEvent mouseLocation], contentRect, NO))
++        {
++            NSPoint center = NSMakePoint(NSMidX(contentRect), NSMidY(contentRect));
++            CGWarpMouseCursorPosition(NSPointToCGPoint([self flippedMouseLocation:center]));
++        }
++
++        if (CGAssociateMouseAndMouseCursorPosition(false) != kCGErrorSuccess)
++            return FALSE;
++
++        mouseLookDetached = TRUE;
++        lastSetCursorPositionTime = 0;
++        mouseMoveDeltaX = 0;
++        mouseMoveDeltaY = 0;
++        return TRUE;
++    }
++
++    - (void) stopMouseLook
++    {
++        if (!mouseLookDetached)
++            return;
++
++        CGAssociateMouseAndMouseCursorPosition(true);
++        mouseLookDetached = FALSE;
++        forceNextMouseMoveAbsolute = TRUE;
++    }
++
++    - (void) updateMouseLook
++    {
++        if (mouseLookDetached && ![self shouldDetachForMouseLook])
++            [self stopMouseLook];
++    }
++
++    - (void) setMouseCaptureWindow:(WineWindow*)window
++    {
++        if (window != mouseCaptureWindow)
++        {
++            [mouseCaptureWindow release];
++            mouseCaptureWindow = [window retain];
++        }
++        [self updateMouseLook];
++    }
++
+     - (void) setCursor:(NSCursor*)newCursor
+     {
+         if (newCursor != cursor)
+@@ -1267,6 +1334,12 @@
+             ret = FALSE;
+         else if (self.clippingCursor && [clipCursorHandler respondsToSelector:@selector(setCursorPosition:)])
+             ret = [clipCursorHandler setCursorPosition:pos];
++        else if ([self shouldDetachForMouseLook] && [self startMouseLook])
++        {
++            // win32u has already stored the new position.  Keep pending mouse
++            // moves: they are relative and apply on top of it.
++            return TRUE;
++        }
+         else
+         {
+             if (self.clippingCursor)
+@@ -1338,6 +1411,8 @@
+         if (self.clippingCursor && CGRectEqualToRect(rect, clipCursorHandler.cursorClipRect))
+             return TRUE;
+ 
++        [self stopMouseLook];
++
+         if (![clipCursorHandler startClippingCursor:rect])
+             return FALSE;
+ 
+@@ -1393,6 +1468,7 @@
+             [windowsBeingDragged addObject:window];
+         else
+             [windowsBeingDragged removeObject:window];
++        [self updateMouseLook];
+     }
+ 
+     - (void) windowWillOrderOut:(WineWindow*)window
+@@ -1487,8 +1563,13 @@
+                 forceNextMouseMoveAbsolute = TRUE;
+             }
+ 
+-            if (forceNextMouseMoveAbsolute || targetWindow != lastTargetWindow)
++            if (mouseLookDetached)
+             {
++                // The event's location is the frozen cursor; only its delta counts.
++                absolute = FALSE;
++            }
++            else if (forceNextMouseMoveAbsolute || targetWindow != lastTargetWindow)
++            {
+                 absolute = TRUE;
+                 forceNextMouseMoveAbsolute = FALSE;
+             }
+@@ -1695,6 +1776,7 @@
+                 event->mouse_button.pressed = pressed;
+                 event->mouse_button.x = floor(pt.x);
+                 event->mouse_button.y = floor(pt.y);
++                event->mouse_button.keep_position = mouseLookDetached;
+                 event->mouse_button.time_ms = [self ticksForEventTime:[theEvent timestamp]];
+ 
+                 [window.queue postEvent:event];
+@@ -1776,6 +1858,7 @@
+                 event = macdrv_create_event(MOUSE_SCROLL, window);
+                 event->mouse_scroll.x = floor(pt.x);
+                 event->mouse_scroll.y = floor(pt.y);
++                event->mouse_scroll.keep_position = mouseLookDetached;
+                 event->mouse_scroll.time_ms = [self ticksForEventTime:[theEvent timestamp]];
+ 
+                 if (CGEventGetIntegerValueField(cgevent, kCGScrollWheelEventIsContinuous))
+@@ -2485,6 +2568,7 @@
+         WineEventQueue* queue;
+ 
+         [self invalidateGotFocusEvents];
++        [self stopMouseLook];
+ 
+         if (!temporarilyIgnoreResignEventsForDialog)
+         {
+@@ -2797,17 +2881,28 @@
+  *              macdrv_get_cursor_position
+  *
+  * Obtains the current cursor position.  Returns zero on failure,
+- * non-zero on success.
++ * non-zero on success, and -1 while mouse-look has the cursor detached
++ * (the Mac cursor's position is not the client's; *pos is not set).
+  */
+ int macdrv_get_cursor_position(CGPoint *pos)
+ {
++    __block int ret = TRUE;
++
+     OnMainThread(^{
+-        NSPoint location = [NSEvent mouseLocation];
+-        location = [[WineApplicationController sharedController] flippedMouseLocation:location];
++        WineApplicationController* controller = [WineApplicationController sharedController];
++        NSPoint location;
++
++        if (controller.mouseLookDetached)
++        {
++            ret = -1;
++            return;
++        }
++
++        location = [controller flippedMouseLocation:[NSEvent mouseLocation]];
+         *pos = cgpoint_win_from_mac(NSPointToCGPoint(location));
+     });
+ 
+-    return TRUE;
++    return ret;
+ }
+ 
+ /***********************************************************************
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -387,6 +387,7 @@
+             bool            pressed;
+             int             x;
+             int             y;
++            bool            keep_position;
+             unsigned long   time_ms;
+         }                                           mouse_button;
+         struct {
+@@ -400,6 +401,7 @@
+             int             y_scroll;
+             int             x;
+             int             y;
++            bool            keep_position;
+             unsigned long   time_ms;
+         }                                           mouse_scroll;
+         struct {
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -691,6 +691,12 @@
+     BOOL ret;
+ 
+     ret = macdrv_get_cursor_position(&pt);
++    if (ret < 0)
++    {
++        /* Mouse-look: the Mac cursor is detached; the server position is the real one */
++        TRACE("mouse-look, keeping server pos %d,%d\n", pos->x, pos->y);
++        return TRUE;
++    }
+     if (ret)
+     {
+         TRACE("pointer at (%g,%g) server pos %d,%d\n", pt.x, pt.y, pos->x, pos->y);
+@@ -890,7 +896,11 @@
+         }
+     }
+ 
+-    send_mouse_input(hwnd, event->window, flags | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
++    /* Mouse-look: the Mac cursor is detached, so the event's location is stale */
++    if (!event->mouse_button.keep_position)
++        flags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
++
++    send_mouse_input(hwnd, event->window, flags,
+                      event->mouse_button.x, event->mouse_button.y,
+                      data, FALSE, event->mouse_button.time_ms);
+ }
+@@ -925,17 +935,20 @@
+  */
+ void macdrv_mouse_scroll(HWND hwnd, const macdrv_event *event)
+ {
++    /* Mouse-look: the Mac cursor is detached, so the event's location is stale */
++    UINT pos_flags = event->mouse_scroll.keep_position ? 0 : MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
++
+     TRACE("win %p/%p scroll (%d,%d) at (%d,%d) time %lu (%lu ticks ago)\n", hwnd,
+           event->window, event->mouse_scroll.x_scroll, event->mouse_scroll.y_scroll,
+           event->mouse_scroll.x, event->mouse_scroll.y,
+           event->mouse_scroll.time_ms, (NtGetTickCount() - event->mouse_scroll.time_ms));
+ 
+     if (event->mouse_scroll.y_scroll)
+-        send_mouse_input(hwnd, event->window, MOUSEEVENTF_WHEEL | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
++        send_mouse_input(hwnd, event->window, MOUSEEVENTF_WHEEL | pos_flags,
+                          event->mouse_scroll.x, event->mouse_scroll.y,
+                          event->mouse_scroll.y_scroll, FALSE, event->mouse_scroll.time_ms);
+     if (event->mouse_scroll.x_scroll)
+-        send_mouse_input(hwnd, event->window, MOUSEEVENTF_HWHEEL | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
++        send_mouse_input(hwnd, event->window, MOUSEEVENTF_HWHEEL | pos_flags,
+                          event->mouse_scroll.x, event->mouse_scroll.y,
+                          event->mouse_scroll.x_scroll, FALSE, event->mouse_scroll.time_ms);
+ }
