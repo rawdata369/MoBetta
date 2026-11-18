@@ -2,6 +2,11 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-18 - Malware scan results
+
+### Added
+- **`docs/SECURITY_SCANS.md`**: ClamAV and VirusTotal results for the v1.0.4 release, the eight engine files MoBetta changes or adds, and the source, with each file's SHA-256, a link to its live VirusTotal report and a screenshot (`docs/screenshots/scans/`). ClamAV finds nothing. On VirusTotal four engine files and the release archive are flagged by one engine each (machine-learning or generic verdicts); the stock Porting Kit files and an unpatched build are clean. Reports to the vendors are pending
+
 ## 2026-11-18 - Fullscreen fix (v1.0.4)
 
 ### Fixed

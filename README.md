@@ -91,6 +91,8 @@ Chat and character names are blurred in the screenshots.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
+Malware scans of the v1.0.4 release, the changed engine files and the source (ClamAV, VirusTotal, with screenshots): [docs/SECURITY_SCANS.md](docs/SECURITY_SCANS.md).
+
 ## Requirements
 
 - **Mac:** Apple Silicon (M1 or later) with Rosetta 2 installed
