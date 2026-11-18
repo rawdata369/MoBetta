@@ -84,7 +84,10 @@ Chat and character names are blurred in the screenshots.
 - [x] mtld3d (Direct3D 9 on Metal) in the engine package (~140 FPS at the inn)
 - [x] One build script for the whole engine, reproducible from any directory
 - [x] Release: download, install guide, checksums
-- [ ] Phase 4: Wider testing
+- [x] Resolution list that fits the screen; faster x87 math (v1.0.2)
+- [x] Mouse-look keeps the cursor inside the window (v1.0.3)
+- [x] Smooth fullscreen with auto-brightness on, and smooth camera after fullscreen (v1.0.4; 10+ minute fullscreen session)
+- [ ] Phase 4: Wider testing (on hold)
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
