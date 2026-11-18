@@ -5,7 +5,7 @@ Scans of the v1.0.4 release, the files MoBetta changes in the engine, and the so
 ## Summary
 
 - **ClamAV:** nothing found in the release archive (fully unpacked), the 4,625 files of the unpacked engine, or the source.
-- **VirusTotal:** the source and five of the eight changed engine files: 0 detections. Four engine files and the release archive: flagged by **one** engine each, out of 42-71. Each flag is a single vendor's heuristic or machine-learning verdict; no other engine agrees with any of them. We believe these are false positives; reports to the vendors are pending, and this page will be updated with their answers (see [Flags](#flags)).
+- **VirusTotal:** the source and five of the eight changed engine files: 0 detections. Four engine files and the release archive: flagged by **one** engine each, out of 42-71. Each flag is a single vendor's heuristic or machine-learning verdict; no other engine agrees with any of them. We believe these are false positives; false-positive reports went to all three vendors on 2026-11-18, and this page will be updated with their answers (see [Flags](#flags)).
 - **Controls:** the stock, unmodified files from Porting Kit's `WS12WineCX26.3_DXMT` engine, and our own build of `winemac.so` without MoBetta's patches, are 0 detections.
 
 Everything MoBetta changes is in [`patches/`](../patches) as readable source, and [`scripts/build_engine.sh`](../scripts/build_engine.sh) rebuilds the engine to the same bytes (the release's SHA-256 is in [`SHA256SUMS`](../SHA256SUMS)).
@@ -51,6 +51,8 @@ Detections / engines that returned a verdict. Click a file for its live report, 
 | `ntdll.so`, `opengl32.so`, `winemac.so` | Microsoft | `Trojan:Script/Wacatac.C!ml` | `!ml` marks a machine-learning verdict, not a signature match. "Wacatac" is Microsoft's catch-all name for such verdicts. The label says "Script", but these are native macOS libraries. The stock files and our unpatched `winemac.so` are clean, so the model reacts to the patched code; the patches are in `patches/` |
 | `user32.dll` | Cynet | `Malicious (score: 100)` | Cynet's score is a heuristic/ML verdict. 70 other engines, including Microsoft, find nothing. Patch 0005 only shortens the display-mode list WoW sees |
 | `WS12WineCX26.3_Mobetta.tar.7z` | K7AntiVirus | `Trojan ( 006e46631 )` | A generic label on the archive. No engine flags the same file inside it, and ClamAV found nothing in any of its files |
+
+Reports sent 2026-11-18: Microsoft (Defender file submission, analysis pending), Cynet and K7 (by email to their false-positive contacts listed by VirusTotal). Each file will be rescanned on VirusTotal after they answer.
 
 What the changed code does: emulate x86 instructions Rosetta 2 rejects (ntdll), keep no-exec memory on and start the x87 helper (ntdll), reuse a buffer mapping (opengl32), shorten the resolution list (user32), and fix mouse-look and fullscreen in the Mac display driver (winemac). Nothing is injected into the game and no game file is changed. See the [README](../README.md) and [CHANGELOG](../CHANGELOG.md).
 
