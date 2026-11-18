@@ -1,0 +1,119 @@
+MoBetta: x87sidecar: Bridge x87 runs across flag-dead shifts by an immediate.
+
+Run bridging v2 carries one IR run across add/sub/and/or/xor/inc/dec whose
+written flags Rosetta's liveness proves dead, but not across shifts. WoW
+3.3.5a's box-vs-frustum test (0x9839e0) picks each box corner with
+`mov eax,[plane]; shr eax,31; mov eax,[ebp+eax*4-8]` between its x87 ops,
+so its first four x87 ops went one per reply through the single-op path,
+each converting its 80-bit slot in and out. In the Shadowglen inn at ultra
+that block was 17.9% of the game's exec-weighted x87 ARM output.
+
+shl/shr/sar r32/r64, imm now bridge under the same flag-dead proof, as
+three more BridgeAluRI kinds lowered to UBFM/SBFM (LSL/LSR/ASR), which
+never write NZCV. A count that masks to 0 stays with stock (x86 leaves the
+register and flags alone there). CL counts and memory forms do not bridge.
+
+That block: 586 -> 124 ARM per pass; whole inn capture 836G -> 709G
+exec-weighted ARM (-15%). MoBetta tests/x87_bridge_shift.c: bit-identical
+to stock Rosetta, the loop 993 -> 204 ms. In game: inn 90-100 -> 115-130 FPS.
+
+diff --git a/rosetta_core/include/rosetta_core/X87Bridge.h b/rosetta_core/include/rosetta_core/X87Bridge.h
+index 55c1e9c..9cdd9e4 100644
+--- a/rosetta_core/include/rosetta_core/X87Bridge.h
++++ b/rosetta_core/include/rosetta_core/X87Bridge.h
+@@ -172,6 +172,23 @@ inline bool is_bridge_v2(const IRInstr& ins) {
+             }
+             return false;
+         }
++        case kOpcodeName_shl:
++        case kOpcodeName_shr:
++        case kOpcodeName_sar: {
++            // r32/r64 by an immediate only (no CL, no memory). A count that
++            // masks to 0 leaves the register (and flags) unchanged on x86;
++            // leave that rare form to stock rather than emit a W-form no-op.
++            if (ins.num_operands != 2) {
++                return false;
++            }
++            const IROperand& dst = ins.operands[0];
++            const IROperand& src = ins.operands[1];
++            if (!gpr_32_or_64(dst) || !plain_immediate(src)) {
++                return false;
++            }
++            const uint64_t mask = dst.reg.size == IROperandSize::S64 ? 63 : 31;
++            return (static_cast<uint64_t>(src.branch.value) & mask) != 0;
++        }
+         case kOpcodeName_inc:
+         case kOpcodeName_dec: {
+             if (ins.num_operands != 1) {
+diff --git a/rosetta_core/include/rosetta_core/X87IR.h b/rosetta_core/include/rosetta_core/X87IR.h
+index e2dbdb4..2696343 100644
+--- a/rosetta_core/include/rosetta_core/X87IR.h
++++ b/rosetta_core/include/rosetta_core/X87IR.h
+@@ -139,6 +139,10 @@ enum BridgeAluKind : uint8_t {
+     kBridgeAluAnd,
+     kBridgeAluOr,
+     kBridgeAluXor,
++    // Shifts by an immediate (BridgeAluRI only; count pre-masked, nonzero)
++    kBridgeAluShl,
++    kBridgeAluShr,
++    kBridgeAluSar,
+ };
+ 
+ enum NodeFlags : uint8_t {
+diff --git a/rosetta_core/src/X87IRBuild.cpp b/rosetta_core/src/X87IRBuild.cpp
+index b8a2bfe..84f9490 100644
+--- a/rosetta_core/src/X87IRBuild.cpp
++++ b/rosetta_core/src/X87IRBuild.cpp
+@@ -430,6 +430,12 @@ static bool build_bridge(Context& ctx, IRInstr* instr) {
+                 return kBridgeAluOr;
+             case kOpcodeName_xor:
+                 return kBridgeAluXor;
++            case kOpcodeName_shl:
++                return kBridgeAluShl;
++            case kOpcodeName_shr:
++                return kBridgeAluShr;
++            case kOpcodeName_sar:
++                return kBridgeAluSar;
+             default:
+                 return -1;
+         }
+@@ -452,6 +458,10 @@ static bool build_bridge(Context& ctx, IRInstr* instr) {
+     }
+ 
+     const int kind = alu_kind(op);
++    if (kind >= kBridgeAluShl &&
++        (dst.kind != IROperandKind::Register || src.kind != IROperandKind::BranchOffset)) {
++        return false;  // shifts: register by immediate only (X87Bridge.h)
++    }
+     if (kind >= 0) {
+         const int16_t kind_enc = bridge_encode_reg(kind);
+         if (dst.kind == IROperandKind::Register) {
+diff --git a/rosetta_core/src/X87IRLower.cpp b/rosetta_core/src/X87IRLower.cpp
+index 2b15de7..8f20c00 100644
+--- a/rosetta_core/src/X87IRLower.cpp
++++ b/rosetta_core/src/X87IRLower.cpp
+@@ -1408,6 +1408,24 @@ void lower(Context& ctx, TranslationResult* result) {
+                 const int dst = bridge_decode_reg(n.inputs[0]);
+                 const int kind = bridge_decode_reg(n.inputs[2]);
+                 const int64_t sv = static_cast<int64_t>(n.imm_bits);
++                if (kind == kBridgeAluShl || kind == kBridgeAluShr || kind == kBridgeAluSar) {
++                    // x86 masks the count to the operand width; the bridge
++                    // predicate already refused a masked count of 0.
++                    const int width = is64 ? 64 : 32;
++                    const int count = static_cast<int>(n.imm_bits & (width - 1));
++                    if (kind == kBridgeAluShl) {
++                        // LSL #c == UBFM Rd, Rn, #(width-c), #(width-1-c)
++                        emit_bitfield(buf, is64, /*opc=*/2 /*UBFM*/, /*N=*/is64,
++                                      static_cast<int8_t>(width - count),
++                                      static_cast<int8_t>(width - 1 - count), dst, dst);
++                    } else {
++                        // LSR/ASR #c == UBFM/SBFM Rd, Rn, #c, #(width-1)
++                        emit_bitfield(buf, is64, kind == kBridgeAluShr ? 2 : 0, /*N=*/is64,
++                                      static_cast<int8_t>(count),
++                                      static_cast<int8_t>(width - 1), dst, dst);
++                    }
++                    break;
++                }
+                 if ((kind == kBridgeAluAdd || kind == kBridgeAluSub) && sv > -4096 && sv < 4096) {
+                     // Direct imm12 form; a negative immediate flips ADD<->SUB
+                     // (identical mod-2^32 wrapping in the W form).

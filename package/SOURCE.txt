@@ -8,7 +8,7 @@ This engine is Porting Kit's WS12WineCX26.3_DXMT engine with these files changed
   lib/wine/i386-windows/user32.dll   Wine, built with MoBetta's patches (LGPL 2.1 or later)
   lib/wine/i386-windows/mtld3d.dll   mtld3d (Zlib)
   lib/wine/x86_64-unix/mtld3d.so     mtld3d (Zlib)
-  bin/x87sidecar                     x87sidecar (MIT)
+  bin/x87sidecar                     x87sidecar, built with MoBetta's patches (MIT)
   share/doc/                         these notices and licenses
   version                            engine name
 

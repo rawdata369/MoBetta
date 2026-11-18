@@ -1,5 +1,6 @@
 #!/bin/bash
 # MoBetta - Build x87sidecar (athei/x87sidecar, MIT) at the pinned commit
+# Applies patches/x87sidecar/*.patch in order (0001 bridges x87 runs across flag-dead shifts).
 #
 # patches/0003 starts i386 processes under it from wine/bin/x87sidecar.
 # Output: build/out/x87sidecar (arm64, ad-hoc signed), checked against the pinned SHA-256.
@@ -15,7 +16,7 @@ ROOT="$PWD"
 
 SIDECAR_URL="https://github.com/athei/x87sidecar.git"
 SIDECAR_COMMIT="499e0f7e60d2961d379df459dd96bc79ecfe59fd"
-SIDECAR_SHA256="e7739742086eabd5cfb8e2a02a213dc68aeb15492f16451a249ba223b8845ae9"
+SIDECAR_SHA256="6a37a6937f6b562d376a7009460a1ba276236a72ec2d4278401eb708e796830b"
 
 SRC="$ROOT/build/x87sidecar"
 BUILD="$SRC/build"
@@ -25,7 +26,7 @@ if [ "$1" = "--clean" ]; then
     rm -rf "$BUILD"
 fi
 
-# Source at the pinned commit, no local edits
+# Source at the pinned commit, then our patches
 if [ ! -d "$SRC/.git" ]; then
     git clone "$SIDECAR_URL" "$SRC"
 fi
@@ -33,11 +34,15 @@ if [ "$(git -C "$SRC" rev-parse HEAD)" != "$SIDECAR_COMMIT" ]; then
     git -C "$SRC" fetch origin
     git -C "$SRC" checkout -q --detach "$SIDECAR_COMMIT"
 fi
-if [ -n "$(git -C "$SRC" status --porcelain)" ]; then
-    echo "Local changes in $SRC; refusing to build"
+git -C "$SRC" checkout -q -- .
+if [ -n "$(git -C "$SRC" status --porcelain --untracked-files=no)" ]; then
+    echo "Staged changes in $SRC; refusing to build"
     git -C "$SRC" status --short
     exit 1
 fi
+for p in "$ROOT"/patches/x87sidecar/*.patch; do
+    git -C "$SRC" apply "$p"
+done
 
 cmake -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release > /dev/null
 cmake --build "$BUILD" --target x87sidecar -j8 > "$BUILD/make.log" 2>&1 \
