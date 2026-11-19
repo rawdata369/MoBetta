@@ -2,6 +2,12 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-19 - x87 sequences joined in WoW's hottest x87 function (x87sidecar patch 0003)
+
+### Changed
+- **x87sidecar now also joins x87 sequences across `add`/`sub`-type instructions in blocks where Rosetta marks no CPU flag as needed** (`patches/x87sidecar/0003`). Before, such a block was skipped in case Rosetta had simply not filled in that information. Tests on Rosetta, in both 64-bit and 32-bit code, show it is exact when Rosetta can see the next block, and marks every flag as needed when it cannot (calls, returns, indirect jumps, very long blocks, page boundaries). So an empty mark means no flag is needed. As a safeguard it is only trusted after Rosetta has filled it in somewhere in the same process; `X87_BRIDGE_ZERO_FL=0` turns it off. This is what kept the hottest x87 function in Dalaran (at 0x7f9480) split into one- and two-instruction pieces. Results are bit-identical to Rosetta's own: the x87sidecar test suite passes (1468 tests), including a new test that fails if a flag the next block needs is ever dropped
+- **Measured:** the copy of that function runs about 34% faster than with patch 0002 (about 512 ms to 339 ms for its test loop), and the game's x87 code in a Dalaran profile gets another 7% shorter. In game at the Dalaran fountain on a MacBook M3: 40-55 FPS with spikes into the 60s (45-50 with 0002, in an earlier sitting), no problems seen. Not in a release yet: it will ship with the next one, together with 0002
+
 ## 2026-11-19 - Longer x87 sequences (x87sidecar patch 0002)
 
 ### Changed
