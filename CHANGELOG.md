@@ -2,6 +2,13 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-19 - x87 values kept in 64-bit form between sequences (x87sidecar patch 0004)
+
+### Changed
+- **x87sidecar no longer converts every x87 register back to Rosetta's 80-bit format at the end of each x87 sequence** (`patches/x87sidecar/0004`). A value the sequence held as a 64-bit double is now stored in a marked form: the double's bits plus a marker in an 80-bit pattern that real x87 math never produces. Writing it takes 5 ARM instructions instead of a chain of about 15-20, and the next sequence reads it straight back. Because the marker lives in the value itself, any copy Rosetta or Wine makes of the registers keeps it, so no change to Rosetta's own code was needed. Everything in x87sidecar that reads the raw registers decodes the marker, and before Rosetta's own x87 code runs, the sidecar converts all registers back to genuine 80-bit values. `X87_TAGGED_SLOTS=0` turns it off. Results are bit-identical to Rosetta's own: the x87sidecar test suite passes (1468 tests)
+- **Differences from real hardware, only visible to unusual code:** a crash handler or debugger that reads saved x87 registers sees the marked form; a hand-made "pseudo-NaN" 80-bit value loaded from memory becomes the standard x87 NaN. Real x87 math never produces those values, and WoW is not known to rely on either
+- **Measured:** a copy of WoW's view-culling loop runs 14% faster (202 to 174 ms) and the copy of the hottest Dalaran function 7% faster (316 to 295 ms). In game at the Dalaran fountain on a MacBook M3: a solid 45-60 FPS depending on how many players are around (40-55 with spikes into the 60s with patch 0003, in an earlier sitting), no problems seen. Not in a release yet: it will ship with the next one, together with 0002 and 0003
+
 ## 2026-11-19 - x87 sequences joined in WoW's hottest x87 function (x87sidecar patch 0003)
 
 ### Changed
