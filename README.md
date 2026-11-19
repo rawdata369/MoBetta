@@ -53,7 +53,7 @@ In game with the v1.0.0 engine on a MacBook M3, windowed, medium-high graphics s
 | Booty Bay, rain | 97 |
 | Shattrath City | 86 |
 
-On v1.0.4 (windowed 1563x1010): Booty Bay 70-80, Dalaran 30-40. Dalaran is limited by the game's own main thread under Rosetta 2, not by Wine, mtld3d or the GPU. Most of that thread's time goes to x87 math, and most of that is spent moving values in and out of Rosetta's 80-bit registers between short x87 sequences; Rosetta's translation of the ordinary code is close to optimal. Since v1.0.5, x87sidecar joins more of those sequences and keeps values in 64-bit form between them: 50-60 FPS at the Dalaran fountain, holding at 50, vs 40-50 on v1.0.4. The shader cache makes arriving in a city smoother on every visit after the first (see [CHANGELOG.md](CHANGELOG.md), 2026-11-19).
+On v1.0.4 (windowed 1563x1010): Booty Bay 70-80, Dalaran 30-40. Dalaran is limited by the game's own main thread under Rosetta 2, not by Wine, mtld3d or the GPU. Most of that thread's time goes to x87 math, and most of that is spent moving values in and out of Rosetta's 80-bit registers between short x87 sequences; Rosetta's translation of the ordinary code is close to optimal. Since v1.0.5, x87sidecar joins more of those sequences and keeps values in 64-bit form between them: 50-60 FPS at the Dalaran fountain, holding at 50, vs 40-50 on v1.0.4. The shader cache makes arriving in a city smoother on every visit after the first (see [CHANGELOG.md](CHANGELOG.md), 2026-11-19). x87sidecar now also joins sequences across longer runs of ordinary instructions (a solid 45-65 FPS at the fountain, not released yet).
 
 <table>
   <tr>

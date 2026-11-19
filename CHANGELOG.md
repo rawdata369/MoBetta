@@ -2,6 +2,11 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-19 - Longer gaps and byte loads inside x87 sequences (x87sidecar patch 0005)
+
+### Changed
+- **x87sidecar now keeps an x87 sequence going across longer stretches of ordinary instructions, and across loading a byte or 16-bit value from memory** (`patches/x87sidecar/0005`). Up to 12 ordinary instructions in a row (was 4), 24 per sequence (was 16), and `movzx`/`movsx` from 8- or 16-bit memory, which used to end the sequence. WoW's hottest x87 function in Dalaran (`0x97c001`) copies a 3-float vector from a global between its x87 instructions, 8-10 plain moves that every earlier version split the sequence at. In a recorded Dalaran profile this takes the x87 cost from 19.51 to 18.82 ARM instructions per x87 instruction (-3.5%), and the copy of the `0x7f9480` function runs 305 -> 273 ms under Wine. At the Dalaran fountain on a MacBook M3, a solid 45-65 FPS, with a low of 35 in crowded spots, and it feels smoother (how many players are around changes it from one sitting to the next). `X87_BRIDGE_MAX_GAP=4 X87_BRIDGE_MAX_TOTAL=16` gives the old limits. Results are bit-identical to Rosetta's own: the x87sidecar test suite passes (1486 tests), including a new test of the byte and 16-bit loads and a 10-instruction gap. Not released yet
+
 ## 2026-11-19 - Faster Dalaran and a shader cache (v1.0.5)
 
 ### Changed
