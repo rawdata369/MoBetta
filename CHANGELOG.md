@@ -2,24 +2,32 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-19 - Faster Dalaran and a shader cache (v1.0.5)
+
+### Changed
+- **Ships the x87sidecar changes from the entries below** (patches 0002, 0003 and 0004): longer x87 sequences, joined in WoW's hottest x87 function, with values kept in 64-bit form between them. At the Dalaran fountain on a MacBook M3, 50-60 FPS holding at 50, against 40-50 on v1.0.4 (how many players are around changes it from one sitting to the next)
+
+### Added
+- **mtld3d's shader cache is on, kept outside the game folder** (`patches/mtld3d/0004`, `d3d9.dll`). mtld3d saves the shaders and render pipelines the game has used, and builds them again while the game loads, so they are ready before the first frame. Upstream keeps that file next to `Wow.exe`, in the game folder, which is why MoBetta had it off. It now lives in the Wine prefix at `AppData\Local\mtld3d-cache\Wow\mtld3d_shaders.bin`, next to mtld3d's logs. Without the cache, arriving in Dalaran compiled 170 shaders while playing, in bursts of up to 83 shaders at once. On the next launch with the cache, 170 shaders and 355 pipelines were rebuilt in 0.25 s at startup, and only 33 new shaders were compiled in town. Arriving in Dalaran is noticeably smoother. The first visit to a place still compiles as before; each later visit uses the cache. `shaderCache.enable=false` in `MTLD3D_CONFIG` or `mtld3d.conf` turns it off. The game folder baseline check still matches every file. Engine SHA-256 `3a26e3455dd37b99315445333cc446cb03b9fa1b7d6d84aaefd4ddeb4f23008b`
+
 ## 2026-11-19 - x87 values kept in 64-bit form between sequences (x87sidecar patch 0004)
 
 ### Changed
 - **x87sidecar no longer converts every x87 register back to Rosetta's 80-bit format at the end of each x87 sequence** (`patches/x87sidecar/0004`). A value the sequence held as a 64-bit double is now stored in a marked form: the double's bits plus a marker in an 80-bit pattern that real x87 math never produces. Writing it takes 5 ARM instructions instead of a chain of about 15-20, and the next sequence reads it straight back. Because the marker lives in the value itself, any copy Rosetta or Wine makes of the registers keeps it, so no change to Rosetta's own code was needed. Everything in x87sidecar that reads the raw registers decodes the marker, and before Rosetta's own x87 code runs, the sidecar converts all registers back to genuine 80-bit values. `X87_TAGGED_SLOTS=0` turns it off. Results are bit-identical to Rosetta's own: the x87sidecar test suite passes (1468 tests)
 - **Differences from real hardware, only visible to unusual code:** a crash handler or debugger that reads saved x87 registers sees the marked form; a hand-made "pseudo-NaN" 80-bit value loaded from memory becomes the standard x87 NaN. Real x87 math never produces those values, and WoW is not known to rely on either
-- **Measured:** a copy of WoW's view-culling loop runs 14% faster (202 to 174 ms) and the copy of the hottest Dalaran function 7% faster (316 to 295 ms). In game at the Dalaran fountain on a MacBook M3: a solid 45-60 FPS depending on how many players are around (40-55 with spikes into the 60s with patch 0003, in an earlier sitting), no problems seen. Not in a release yet: it will ship with the next one, together with 0002 and 0003
+- **Measured:** a copy of WoW's view-culling loop runs 14% faster (202 to 174 ms) and the copy of the hottest Dalaran function 7% faster (316 to 295 ms). In game at the Dalaran fountain on a MacBook M3: a solid 45-60 FPS depending on how many players are around (40-55 with spikes into the 60s with patch 0003, in an earlier sitting), no problems seen. Released in v1.0.5
 
 ## 2026-11-19 - x87 sequences joined in WoW's hottest x87 function (x87sidecar patch 0003)
 
 ### Changed
 - **x87sidecar now also joins x87 sequences across `add`/`sub`-type instructions in blocks where Rosetta marks no CPU flag as needed** (`patches/x87sidecar/0003`). Before, such a block was skipped in case Rosetta had simply not filled in that information. Tests on Rosetta, in both 64-bit and 32-bit code, show it is exact when Rosetta can see the next block, and marks every flag as needed when it cannot (calls, returns, indirect jumps, very long blocks, page boundaries). So an empty mark means no flag is needed. As a safeguard it is only trusted after Rosetta has filled it in somewhere in the same process; `X87_BRIDGE_ZERO_FL=0` turns it off. This is what kept the hottest x87 function in Dalaran (at 0x7f9480) split into one- and two-instruction pieces. Results are bit-identical to Rosetta's own: the x87sidecar test suite passes (1468 tests), including a new test that fails if a flag the next block needs is ever dropped
-- **Measured:** the copy of that function runs about 34% faster than with patch 0002 (about 512 ms to 339 ms for its test loop), and the game's x87 code in a Dalaran profile gets another 7% shorter. In game at the Dalaran fountain on a MacBook M3: 40-55 FPS with spikes into the 60s (45-50 with 0002, in an earlier sitting), no problems seen. Not in a release yet: it will ship with the next one, together with 0002
+- **Measured:** the copy of that function runs about 34% faster than with patch 0002 (about 512 ms to 339 ms for its test loop), and the game's x87 code in a Dalaran profile gets another 7% shorter. In game at the Dalaran fountain on a MacBook M3: 40-55 FPS with spikes into the 60s (45-50 with 0002, in an earlier sitting), no problems seen. Released in v1.0.5
 
 ## 2026-11-19 - Longer x87 sequences (x87sidecar patch 0002)
 
 ### Changed
 - **x87sidecar now keeps an x87 sequence going across `push`, `pop` and storing a constant to memory** (`patches/x87sidecar/0002`). These ordinary instructions used to end the sequence, so the values went back to Rosetta's 80-bit registers in memory and were reloaded right after. It also allows up to 4 ordinary instructions in a row between x87 instructions (was 2), since that is how WoW's code is laid out. Results are bit-identical to Rosetta's own: the whole x87sidecar test suite passes (1450 tests), and a copy of the hottest function in Dalaran, instruction for instruction, gives the same result bits with and without it
-- **Measured:** that copied function runs about 10% faster (about 595 ms to 530 ms for its test loop), and the game's x87 code in a Dalaran profile gets 5.7% shorter. In game at the Dalaran fountain on a MacBook M3: 45-50 FPS with the change, 40-50 without it, in the same sitting. That is a small gain at best, with no problems seen. Not in a release yet: it will ship with the next one
+- **Measured:** that copied function runs about 10% faster (about 595 ms to 530 ms for its test loop), and the game's x87 code in a Dalaran profile gets 5.7% shorter. In game at the Dalaran fountain on a MacBook M3: 45-50 FPS with the change, 40-50 without it, in the same sitting. That is a small gain at best, with no problems seen. Released in v1.0.5
 
 ## 2026-11-19 - Where Rosetta loses time in Dalaran
 

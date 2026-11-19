@@ -21,7 +21,7 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 - **The frame rate:** game processes start under [x87sidecar](https://github.com/athei/x87sidecar), which makes Rosetta translate the game's x87 floating point to native ARM code instead of a slow software path. **20 FPS -> 80 FPS average** (106 max)
 - **Graphics buffers:** Wine's OpenGL keeps the low-memory view of a graphics buffer between maps instead of rebuilding it every time. Up to ~20% more FPS, 127 max
 - **DEP** stays on under Rosetta, as on Windows
-- **Direct3D 9 on Metal:** our build of [mtld3d](https://github.com/athei/mtld3d), without the hooks its release puts into the game's memory, with HDR off (WoW 3.3.5a has no HDR content; turning it on works without stalls since v1.0.4) and its logs kept out of the game folder. ~140 FPS at the inn (was 60-80), ~170 in a light view
+- **Direct3D 9 on Metal:** our build of [mtld3d](https://github.com/athei/mtld3d), without the hooks its release puts into the game's memory, with HDR off (WoW 3.3.5a has no HDR content; turning it on works without stalls since v1.0.4) and its logs and shader cache kept in the Wine prefix instead of the game folder (v1.0.5). ~140 FPS at the inn (was 60-80), ~170 in a light view
 
 **Key constraint:** No game file modifications, nothing injected into the game process. This engine is designed for use with servers that run anti-cheat systems. A SHA-256 baseline of the game folder is checked before and after every test.
 
@@ -53,7 +53,7 @@ In game with the v1.0.0 engine on a MacBook M3, windowed, medium-high graphics s
 | Booty Bay, rain | 97 |
 | Shattrath City | 86 |
 
-On v1.0.4 (windowed 1563x1010): Booty Bay 70-80, Dalaran 30-40. Dalaran is limited by the game's own main thread under Rosetta 2, not by Wine, mtld3d or the GPU. Most of that thread's time goes to x87 math, and most of that is spent moving values in and out of Rosetta's 80-bit registers between short x87 sequences; Rosetta's translation of the ordinary code is close to optimal. x87sidecar now joins more of those sequences and keeps values in 64-bit form between them (a solid 45-60 FPS at the Dalaran fountain vs 40-50, not released yet; see [CHANGELOG.md](CHANGELOG.md), 2026-11-19).
+On v1.0.4 (windowed 1563x1010): Booty Bay 70-80, Dalaran 30-40. Dalaran is limited by the game's own main thread under Rosetta 2, not by Wine, mtld3d or the GPU. Most of that thread's time goes to x87 math, and most of that is spent moving values in and out of Rosetta's 80-bit registers between short x87 sequences; Rosetta's translation of the ordinary code is close to optimal. Since v1.0.5, x87sidecar joins more of those sequences and keeps values in 64-bit form between them: 50-60 FPS at the Dalaran fountain, holding at 50, vs 40-50 on v1.0.4. The shader cache makes arriving in a city smoother on every visit after the first (see [CHANGELOG.md](CHANGELOG.md), 2026-11-19).
 
 <table>
   <tr>
@@ -89,6 +89,7 @@ Chat and character names are blurred in the screenshots.
 - [x] Resolution list that fits the screen; faster x87 math (v1.0.2)
 - [x] Mouse-look keeps the cursor inside the window (v1.0.3)
 - [x] Smooth fullscreen with auto-brightness on, and smooth camera after fullscreen (v1.0.4; 10+ minute fullscreen session)
+- [x] Faster x87 math in Dalaran, and mtld3d's shader cache outside the game folder (v1.0.5)
 - [ ] Phase 4: Wider testing (on hold)
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
