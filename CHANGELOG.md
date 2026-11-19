@@ -2,6 +2,12 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-19 - Longer x87 sequences (x87sidecar patch 0002)
+
+### Changed
+- **x87sidecar now keeps an x87 sequence going across `push`, `pop` and storing a constant to memory** (`patches/x87sidecar/0002`). These ordinary instructions used to end the sequence, so the values went back to Rosetta's 80-bit registers in memory and were reloaded right after. It also allows up to 4 ordinary instructions in a row between x87 instructions (was 2), since that is how WoW's code is laid out. Results are bit-identical to Rosetta's own: the whole x87sidecar test suite passes (1450 tests), and a copy of the hottest function in Dalaran, instruction for instruction, gives the same result bits with and without it
+- **Measured:** that copied function runs about 10% faster (about 595 ms to 530 ms for its test loop), and the game's x87 code in a Dalaran profile gets 5.7% shorter. In game at the Dalaran fountain on a MacBook M3: 45-50 FPS with the change, 40-50 without it, in the same sitting. That is a small gain at best, with no problems seen. Not in a release yet: it will ship with the next one
+
 ## 2026-11-19 - Where Rosetta loses time in Dalaran
 
 ### Tested
