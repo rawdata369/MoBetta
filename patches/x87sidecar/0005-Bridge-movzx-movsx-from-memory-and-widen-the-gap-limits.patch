@@ -1,0 +1,476 @@
+MoBetta: x87sidecar: Bridge movzx/movsx from 8/16-bit memory and widen the gap limits.
+
+Two things kept x87 runs apart in WoW 3.3.5a after 0002-0004:
+
+- Gaps longer than X87_BRIDGE_MAX_GAP (4).  WoW's hottest x87 function
+  (0x97c001, 15% of Wow.exe samples at the Dalaran fountain) copies a
+  3-float vector from a global between x87 ops: `mov edx,[0xb2d540]; mov
+  eax,[esi+4]; mov [eax],edx; ...`, 8-10 plain movs.  Every one of them was
+  already a bridge shape (an absolute address decodes as a MemRef with no
+  base register), so only the gap limit kept the runs apart.  The bounds go
+  to [1,16] / [1,32] and the defaults to gap 12 / total 24.
+
+- movzx/movsx r32/r64 from an 8- or 16-bit memory operand.  New IR op
+  BridgeLoadExt: LDRB/LDRH zero-extend into the W register, LDRSB/LDRSH
+  sign-extend to the destination width (W form for r32, which clears bits
+  63:32 as the register form's SBFX does).  The node's imm_bits shares
+  storage with mem_operand, so the sign flag rides negatively encoded in
+  inputs[1] and the width comes from the operand.  Flag-free; a barrier
+  for load sinking and fenced off DSE and fma_reduce like BridgeLoadG.
+  movsxd r64,m32 and segment overrides stay with stock.
+
+Offline, Session #28 Dalaran profile (profile_analyze, production config):
+19.51 -> 18.82 ARM per x87 op (-3.5%; wider limits alone 19.00, movzx
+alone 19.34), no IR build, FPR or GPR failures.  Gap 12 / total 32 gives
+18.79; 24 keeps regions shorter for the same result.
+
+A memory fault inside a joined region behaves as for any bridged load or
+store today (DECISIONS.md #22); wider gaps put more plain loads and stores
+in such regions.
+
+Tests: tests/test_bridge_loadext.c (movzx/movsx m8/m16 into r32 with
+garbage upper halves and into r64, values 0x80/0x7f/0xff/0x8000/0xffff, a
+loaded byte as the next x87 op's index, a ten-instruction gap of loads and
+stores read back by x87; all four regions logged as joined); suite 1486
+passed, 0 failed, 2 known stock divergences.  MoBetta tests/x87_bridge_stack.c
+under Wine: bits 8c4b97bdea0f82c5 as before, loop 305 -> 273 ms (median of
+5); tests/x87_bridge_shift.c bits a2d1d8e50f5de46d, 174 -> 172 ms.
+
+diff --git a/rosetta_core/include/rosetta_core/Config.h b/rosetta_core/include/rosetta_core/Config.h
+index e11d359..2fca0f8 100644
+--- a/rosetta_core/include/rosetta_core/Config.h
++++ b/rosetta_core/include/rosetta_core/Config.h
+@@ -130,10 +130,10 @@ struct RosettaConfig {
+                                       //                           dead; lowered to non-flag-
+                                       //                           setting ARM.  Requires
+                                       //                           enable_bridge.
+-    uint8_t bridge_max_gap;           // X87_BRIDGE_MAX_GAP        [1,4], default 4: max
++    uint8_t bridge_max_gap;           // X87_BRIDGE_MAX_GAP        [1,16], default 12: max
+                                       //                           consecutive bridge instrs per
+                                       //                           gap.
+-    uint8_t bridge_max_total;         // X87_BRIDGE_MAX_TOTAL      [1,16], default 16: max bridge
++    uint8_t bridge_max_total;         // X87_BRIDGE_MAX_TOTAL      [1,32], default 24: max bridge
+                                       //                           instrs per region.
+     uint8_t bridge_zero_fl;           // X87_BRIDGE_ZERO_FL        (default ON, MoBetta 0003)
+                                       //                           v2 also bridges in a block
+diff --git a/rosetta_core/include/rosetta_core/X87Bridge.h b/rosetta_core/include/rosetta_core/X87Bridge.h
+index fd78339..1473a2a 100644
+--- a/rosetta_core/include/rosetta_core/X87Bridge.h
++++ b/rosetta_core/include/rosetta_core/X87Bridge.h
+@@ -29,8 +29,7 @@
+ // 2026-07-12, so consuming it as a nop is exact).  Excluded: other 8/16-bit
+ // operands (sub-register merge semantics), segment overrides, rep prefixes,
+ // fixup-carrying immediates, absolute-memory operands (need external
+-// fixups), movzx/movsx from memory (deferred: needs a width field
+-// alongside mem_operand).
++// fixups).  movzx/movsx from 8/16-bit memory: v1.2 below.
+ //
+ // v1.1 (MoBetta 0002): `mov [m],imm` (32/64-bit store of a plain
+ // immediate; Rosetta hands the immediate sign-extended to 64 bits), and
+@@ -43,6 +42,11 @@
+ // quirks), 16-bit forms and `push imm` (its operand carries no size) stay
+ // with stock too.  All three shapes are flag-free: no liveness proof.
+ //
++// v1.2 (MoBetta 0005): `movzx`/`movsx` r32/r64 from an 8- or 16-bit
++// memory operand (BridgeLoadExt; the width comes from the operand, the
++// node's imm_bits carries it).  Flag-free.  `movsxd r64,m32` stays with
++// stock.
++//
+ // v2 scope: v1 plus the simple flag-WRITING ALU ops add/sub/inc/dec/and/
+ // or/xor, bridgeable only when their written flags are provably dead.
+ // The proof is Rosetta's own per-instruction liveness analysis,
+@@ -140,8 +144,14 @@ inline bool is_bridge_v1(const IRInstr& ins) {
+         if (!gpr_32_or_64(dst)) {
+             return false;
+         }
++        if (src.kind == IROperandKind::MemRef) {
++            // v1.2 (MoBetta 0005): movzx/movsx r,m8/m16 (not movsxd, not a
++            // segment override).  The source width rides in the operand.
++            return op != kOpcodeName_movsxd && src.mem.seg_override == 0 &&
++                   (src.mem.size == IROperandSize::S8 || src.mem.size == IROperandSize::S16);
++        }
+         if (src.kind != IROperandKind::Register || !src.reg.reg.is_gpr()) {
+-            return false;  // memory sources deferred
++            return false;
+         }
+         switch (src.reg.size) {
+             case IROperandSize::S8:
+diff --git a/rosetta_core/include/rosetta_core/X87IR.h b/rosetta_core/include/rosetta_core/X87IR.h
+index 384f15a..360ccf3 100644
+--- a/rosetta_core/include/rosetta_core/X87IR.h
++++ b/rosetta_core/include/rosetta_core/X87IR.h
+@@ -139,6 +139,12 @@ enum class Op : uint8_t {
+                     //   room for both, and IRInstr outlives the lowering.
+     BridgePush,     // push/pushd r  inputs[0]=enc(src), src != ESP/RSP
+     BridgePop,      // pop/popd r    inputs[0]=enc(dst), dst != ESP/RSP
++
++    // ── Bridge v1.2 (MoBetta 0005) ──────────────────────────────────────────
++    BridgeLoadExt,  // movzx/movsx r,m8/m16  inputs[0]=enc(dst), mem_operand=&src,
++                    //   inputs[1]=enc(1) for movsx, enc(0) for movzx (imm_bits
++                    //   shares storage with mem_operand); the source width is
++                    //   the operand's size.  LDRB/LDRH/LDRSB/LDRSH, flag-free.
+ };
+ 
+ // ALU selector for BridgeAlu* nodes; stored in inputs[2] via
+diff --git a/rosetta_core/src/ConfigEnv.cpp b/rosetta_core/src/ConfigEnv.cpp
+index 2b261cb..566089f 100644
+--- a/rosetta_core/src/ConfigEnv.cpp
++++ b/rosetta_core/src/ConfigEnv.cpp
+@@ -224,8 +224,8 @@ RosettaConfig load_config_from_env() {
+     // Gap 4 / total 16 since MoBetta 0002: push/pop and mov [m],imm gaps in
+     // WoW's code run 3-4 instructions (0x7f9480: `mov; push; push; mov`);
+     // at 2 / 8 the new shapes join almost nothing there.
+-    cfg.bridge_max_gap = 4;
+-    cfg.bridge_max_total = 16;
++    cfg.bridge_max_gap = 12;
++    cfg.bridge_max_total = 24;
+     // MoBetta 0003: all-zero flag_liveness blocks are proven too once the
+     // field is known populated in this process (X87Bridge.h,
+     // flag_liveness_trusted).  Set =0 for the per-block rule.
+@@ -246,8 +246,8 @@ RosettaConfig load_config_from_env() {
+                         hi);
+         }
+     };
+-    parse_bridge_bound("X87_BRIDGE_MAX_GAP", cfg.bridge_max_gap, 1, 4);
+-    parse_bridge_bound("X87_BRIDGE_MAX_TOTAL", cfg.bridge_max_total, 1, 16);
++    parse_bridge_bound("X87_BRIDGE_MAX_GAP", cfg.bridge_max_gap, 1, 16);
++    parse_bridge_bound("X87_BRIDGE_MAX_TOTAL", cfg.bridge_max_total, 1, 32);
+     if (const char* v = std::getenv("X87_BRIDGE_HASH_LIST"); v != nullptr && v[0] != '\0') {
+         parse_hash_list(v, cfg.x87_bridge_hash_list);
+         std::printf("[rosettax87] X87_BRIDGE_HASH_LIST: %zu unique hashes\n",
+@@ -584,9 +584,9 @@ void print_env_help(std::FILE* out) {
+         "                                liveness byte (default ON: an all-zero\n"
+         "                                block counts once any block of the\n"
+         "                                process had one)\n"
+-        "  X87_BRIDGE_MAX_GAP=N          [1,4] default 4: max consecutive bridge\n"
++        "  X87_BRIDGE_MAX_GAP=N          [1,16] default 12: max consecutive bridge\n"
+         "                                instructions per gap\n"
+-        "  X87_BRIDGE_MAX_TOTAL=N        [1,16] default 16: max bridge instructions\n"
++        "  X87_BRIDGE_MAX_TOTAL=N        [1,32] default 24: max bridge instructions\n"
+         "                                per bridged region\n"
+         "  X87_LOG_BRIDGE=1              one stderr line per bridged compile/fallback\n"
+         "  X87_BRIDGE_HASH_LIST=H,...    bridge ONLY blocks whose IR-content hash is\n"
+diff --git a/rosetta_core/src/X87IRBuild.cpp b/rosetta_core/src/X87IRBuild.cpp
+index 0f00df2..66d8979 100644
+--- a/rosetta_core/src/X87IRBuild.cpp
++++ b/rosetta_core/src/X87IRBuild.cpp
+@@ -418,6 +418,17 @@ static bool build_bridge(Context& ctx, IRInstr* instr) {
+         return true;
+     }
+     if (op == kOpcodeName_movzx || op == kOpcodeName_movsx || op == kOpcodeName_movsxd) {
++        if (src.kind == IROperandKind::MemRef) {
++            // v1.2: movzx/movsx r,m8/m16 (is_bridge_v1 checked the shape).
++            auto id = ctx.add_node(Op::BridgeLoadExt, bridge_encode_reg(dst.reg.reg.index()));
++            if (id < 0) {
++                return false;
++            }
++            ctx.nodes[id].flags |= width_flag(dst);
++            ctx.nodes[id].mem_operand = &src;
++            ctx.nodes[id].inputs[1] = bridge_encode_reg(op == kOpcodeName_movzx ? 0 : 1);
++            return true;
++        }
+         // Shape already validated by is_bridge_v1: dst is a 32/64-bit GPR,
+         // src is a register — 8-bit (low or high byte), 16-bit, or 32-bit
+         // (the latter only for movsxd).
+diff --git a/rosetta_core/src/X87IRLower.cpp b/rosetta_core/src/X87IRLower.cpp
+index e859cca..a5f5119 100644
+--- a/rosetta_core/src/X87IRLower.cpp
++++ b/rosetta_core/src/X87IRLower.cpp
+@@ -1391,6 +1391,25 @@ void lower(Context& ctx, TranslationResult* result) {
+                 break;
+             }
+ 
++            // ── Bridge v1.2 (MoBetta 0005) ─────────────────────────────────
++            case Op::BridgeLoadExt: {
++                // movzx/movsx r,m8/m16.  LDRB/LDRH zero-extend into the W
++                // register (bits [63:32] cleared, as the W-form UBFX of the
++                // register form); LDRSB/LDRSH sign-extend to the dst width,
++                // the W form clearing [63:32] as SBFX's W form does.
++                const int dst = bridge_decode_reg(n.inputs[0]);
++                const int size = n.mem_operand->mem.size == IROperandSize::S16 ? 1 : 0;
++                int opc = 1;  // LDR (zero-extend)
++                if (bridge_decode_reg(n.inputs[1]) != 0) {
++                    opc = (n.flags & kBridge64) ? 2 : 3;  // LDRS to X / to W
++                }
++                const int addr =
++                    compute_operand_address(*result, /*is_64bit=*/true, n.mem_operand, GPR::XZR);
++                emit_ldr_str_imm(buf, size, /*is_fp=*/0, opc, /*imm12=*/0, addr, dst);
++                free_gpr(*result, addr);
++                break;
++            }
++
+             // ── Bridge v1.1 (MoBetta 0002) ─────────────────────────────────
+             case Op::BridgeStoreGI: {
+                 // mov [m],imm.  The immediate is the IRInstr operand after
+@@ -1931,6 +1950,7 @@ int peak_live_gprs(const Context& ctx, int budget, int* first_over_node, bool fa
+             case Op::BridgeLea:
+             case Op::BridgeLoadG:
+             case Op::BridgeStoreG:
++            case Op::BridgeLoadExt:
+                 transient = 1;
+                 break;
+             // Push/pop address through X4 itself; mov [m],imm holds an
+@@ -2468,6 +2488,7 @@ static bool remat_relieve_fpr_pressure(Context& ctx, int budget) {
+                         case Op::BridgeStoreGI:
+                         case Op::BridgePush:
+                         case Op::BridgePop:
++                        case Op::BridgeLoadExt:
+                             barrier = true;
+                             break;
+                         default:
+diff --git a/rosetta_core/src/X87IROptimize.cpp b/rosetta_core/src/X87IROptimize.cpp
+index 3e9b8de..e264759 100644
+--- a/rosetta_core/src/X87IROptimize.cpp
++++ b/rosetta_core/src/X87IROptimize.cpp
+@@ -134,6 +134,7 @@ static void pass_dse(Context& ctx) {
+             case Op::BridgeStoreGI:
+             case Op::BridgePush:
+             case Op::BridgePop:
++            case Op::BridgeLoadExt:
+                 continue;
+             default:
+                 break;
+@@ -181,6 +182,7 @@ static void pass_dse(Context& ctx) {
+             case Op::BridgeStoreGI:
+             case Op::BridgePush:
+             case Op::BridgePop:
++            case Op::BridgeLoadExt:
+                 continue;
+             default:
+                 break;
+@@ -436,6 +438,7 @@ static void pass_fma_reduce(Context& ctx) {
+             case Op::BridgeStoreGI:
+             case Op::BridgePush:
+             case Op::BridgePop:
++            case Op::BridgeLoadExt:
+                 return;
+             default:
+                 break;
+diff --git a/scripts/run_tests.sh b/scripts/run_tests.sh
+index 947d6ac..8bc882f 100755
+--- a/scripts/run_tests.sh
++++ b/scripts/run_tests.sh
+@@ -169,6 +169,7 @@ ALL_TESTS=(
+     test_bridge_alu
+     test_bridge_ext
+     test_bridge_stack
++    test_bridge_loadext
+     test_bridge_fallthrough
+     test_fld_arith_arithp_fma
+     test_readst_elide
+@@ -869,6 +870,7 @@ ALLOC_FAIL_TESTS=(
+     test_ir_split
+     test_bridge_alu
+     test_bridge_stack
++    test_bridge_loadext
+     test_bridge_fallthrough
+     test_fistp_multi
+     test_fist_pressure
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 42f2a0e..8c8c35b 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -102,6 +102,7 @@ add_x86_sample(test_bridge_flags)
+ add_x86_sample(test_bridge_alu)
+ add_x86_sample(test_bridge_ext)
+ add_x86_sample(test_bridge_stack)
++add_x86_sample(test_bridge_loadext)
+ add_x86_sample(test_bridge_fallthrough)
+ add_x86_sample(test_decoder_fcomp_st)
+ add_x86_sample_lowzero(test_decoder_arpl)
+diff --git a/tests/test_bridge_loadext.c b/tests/test_bridge_loadext.c
+new file mode 100644
+index 0000000..4953a52
+--- /dev/null
++++ b/tests/test_bridge_loadext.c
+@@ -0,0 +1,175 @@
++/*
++ * test_bridge_loadext.c — Run bridging v1.2 (MoBetta 0005): movzx/movsx from
++ * 8- and 16-bit memory joining x87 segments, and gaps longer than four
++ * bridge instructions (X87_BRIDGE_MAX_GAP default 12, total 24).
++ *
++ * Checks the FP result and every bit of the registers the bridges wrote:
++ * the zero- or sign-extension to 32 bits, the cleared upper half of a
++ * 32-bit destination (preloaded with garbage), and the 64-bit sign
++ * extension.  One case feeds the loaded byte into the next x87 op's index
++ * register.  Meaningful under bridging (the default phases); with
++ * X87_ENABLE_BRIDGE=0 the same code checks the unbridged path.
++ *
++ * Build: clang -arch x86_64 -O0 -o test_bridge_loadext test_bridge_loadext.c
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++static int failures = 0;
++static uint64_t as_u64(double d) {
++    uint64_t u;
++    memcpy(&u, &d, 8);
++    return u;
++}
++
++static void check(const char* name, double got, double expected) {
++    if (as_u64(got) != as_u64(expected)) {
++        printf("FAIL  %-55s  got=%.17g  expected=%.17g\n", name, got, expected);
++        failures++;
++    } else {
++        printf("PASS  %s\n", name);
++    }
++}
++
++static void check_u64(const char* name, uint64_t got, uint64_t expected) {
++    if (got != expected) {
++        printf("FAIL  %-55s  got=0x%016llx  expected=0x%016llx\n", name,
++               (unsigned long long)got, (unsigned long long)expected);
++        failures++;
++    } else {
++        printf("PASS  %s\n", name);
++    }
++}
++
++int main(void) {
++    const double a[4] = {1.5, 2.5, -3.25, 4.0};
++    const uint8_t b[4] = {0x80, 0x7f, 0xff, 0x02};
++    const uint16_t h[4] = {0x8000, 0x7fff, 0xffff, 0x1234};
++
++    /* 32-bit destinations, garbage in the upper halves beforehand. */
++    for (int k = 0; k < 4; k++) {
++        double out;
++        uint64_t zb = 0, sb = 0, zw = 0, sw = 0;
++        __asm__ volatile(
++            "movabsq $0xdeadbeefcafef00d, %%rax\n\t"
++            "movq   %%rax, %%rbx\n\t"
++            "movq   %%rax, %%rsi\n\t"
++            "movq   %%rax, %%rdi\n\t"
++            "fldl   (%5)\n\t"
++            "fmull  8(%5)\n\t"
++            "movzbl (%6), %%eax\n\t" /* bridge: movzx r32,m8 */
++            "movsbl (%6), %%ebx\n\t" /* bridge: movsx r32,m8 */
++            "fldl   16(%5)\n\t"
++            "fmull  24(%5)\n\t"
++            "movzwl (%7), %%esi\n\t" /* bridge: movzx r32,m16 */
++            "movswl (%7), %%edi\n\t" /* bridge: movsx r32,m16 */
++            "faddp\n\t"
++            "fstpl  (%8)\n\t"
++            "movq   %%rax, %1\n\t"
++            "movq   %%rbx, %2\n\t"
++            "movq   %%rsi, %3\n\t"
++            "movq   %%rdi, %4\n\t"
++            : "=m"(out), "=m"(zb), "=m"(sb), "=m"(zw), "=m"(sw)
++            : "r"(a), "r"(&b[k]), "r"(&h[k]), "r"(&out)
++            : "rax", "rbx", "rsi", "rdi", "st", "st(1)", "memory");
++        char name[64];
++        snprintf(name, sizeof name, "r32 [%d]: fp result", k);
++        check(name, out, a[0] * a[1] + a[2] * a[3]);
++        snprintf(name, sizeof name, "r32 [%d]: movzx m8", k);
++        check_u64(name, zb, b[k]);
++        snprintf(name, sizeof name, "r32 [%d]: movsx m8", k);
++        check_u64(name, sb, (uint32_t)(int32_t)(int8_t)b[k]);
++        snprintf(name, sizeof name, "r32 [%d]: movzx m16", k);
++        check_u64(name, zw, h[k]);
++        snprintf(name, sizeof name, "r32 [%d]: movsx m16", k);
++        check_u64(name, sw, (uint32_t)(int32_t)(int16_t)h[k]);
++    }
++
++    /* 64-bit destinations. */
++    for (int k = 0; k < 4; k++) {
++        double out;
++        uint64_t zb = 1, sb = 1, sw = 1;
++        __asm__ volatile(
++            "fldl   (%4)\n\t"
++            "fmull  8(%4)\n\t"
++            "movzbq (%5), %%rax\n\t" /* bridge: movzx r64,m8 */
++            "movsbq (%5), %%rbx\n\t" /* bridge: movsx r64,m8 */
++            "movswq (%6), %%rsi\n\t" /* bridge: movsx r64,m16 */
++            "fldl   16(%4)\n\t"
++            "fmull  24(%4)\n\t"
++            "fsubrp\n\t"
++            "fstpl  (%7)\n\t"
++            "movq   %%rax, %1\n\t"
++            "movq   %%rbx, %2\n\t"
++            "movq   %%rsi, %3\n\t"
++            : "=m"(out), "=m"(zb), "=m"(sb), "=m"(sw)
++            : "r"(a), "r"(&b[k]), "r"(&h[k]), "r"(&out)
++            : "rax", "rbx", "rsi", "st", "st(1)", "memory");
++        char name[64];
++        snprintf(name, sizeof name, "r64 [%d]: fp result", k);
++        /* AT&T fsubrp is Intel fsubp: st(1) - st(0). */
++        check(name, out, a[0] * a[1] - a[2] * a[3]);
++        snprintf(name, sizeof name, "r64 [%d]: movzx m8", k);
++        check_u64(name, zb, b[k]);
++        snprintf(name, sizeof name, "r64 [%d]: movsx m8", k);
++        check_u64(name, sb, (uint64_t)(int64_t)(int8_t)b[k]);
++        snprintf(name, sizeof name, "r64 [%d]: movsx m16", k);
++        check_u64(name, sw, (uint64_t)(int64_t)(int16_t)h[k]);
++    }
++
++    /* The loaded byte is the next x87 op's index. */
++    {
++        double out;
++        const uint8_t idx = 3;
++        __asm__ volatile(
++            "fldl   (%1)\n\t"
++            "fmull  8(%1)\n\t"
++            "movzbl (%2), %%ecx\n\t" /* bridge: movzx r32,m8 */
++            "faddl  (%1,%%rcx,8)\n\t"
++            "fmull  16(%1)\n\t"
++            "fstpl  (%3)\n\t"
++            :
++            : "m"(out), "r"(a), "r"(&idx), "r"(&out)
++            : "rcx", "st", "memory");
++        check("index from movzx m8", out, (a[0] * a[1] + a[3]) * a[2]);
++    }
++
++    /* A gap of ten bridge instructions (WoW 0x97c9a2's shape: loads from one
++     * place, stores to another), then the stores read back by x87. */
++    {
++        double out;
++        uint32_t src[3] = {0x3fc00000u, 0x40200000u, 0xc0500000u}; /* 1.5f 2.5f -3.25f */
++        uint32_t dst[3] = {0, 0, 0};
++        __asm__ volatile(
++            "fldl   (%1)\n\t"
++            "fmull  8(%1)\n\t"
++            "movl   (%2), %%edx\n\t"
++            "movl   %%edx, (%3)\n\t"
++            "movl   4(%2), %%edx\n\t"
++            "movl   %%edx, 4(%3)\n\t"
++            "movl   8(%2), %%edx\n\t"
++            "movl   %%edx, 8(%3)\n\t"
++            "movzwl 2(%2), %%eax\n\t"
++            "movsbl 11(%2), %%ecx\n\t"
++            "leal   (%%rax,%%rcx), %%eax\n\t"
++            "movl   %%eax, %%r8d\n\t"
++            "fadds  (%3)\n\t"
++            "fadds  4(%3)\n\t"
++            "fmuls  8(%3)\n\t"
++            "fstpl  (%4)\n\t"
++            "movl   %%r8d, %%eax\n\t"
++            "movl   %%eax, 8(%3)\n\t"
++            :
++            : "m"(out), "r"(a), "r"(src), "r"(dst), "r"(&out)
++            : "rax", "rcx", "rdx", "r8", "st", "cc", "memory");
++        check("ten-instruction gap: fp result", out, (a[0] * a[1] + 1.5 + 2.5) * -3.25);
++        check_u64("ten-instruction gap: integer result", dst[2],
++                  (uint32_t)(0x3fc0 + (int32_t)(int8_t)0xc0));
++        check_u64("ten-instruction gap: copies", ((uint64_t)dst[1] << 32) | dst[0],
++                  ((uint64_t)src[1] << 32) | src[0]);
++    }
++
++    printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/tools/profile_analyze.cpp b/tools/profile_analyze.cpp
+index ca80b65..e520e50 100644
+--- a/tools/profile_analyze.cpp
++++ b/tools/profile_analyze.cpp
+@@ -491,8 +491,8 @@ RosettaConfig make_production_cfg() {
+     cfg.enable_ir_remat = 1;
+     cfg.enable_bridge = 1;
+     cfg.enable_bridge_v2 = 1;
+-    cfg.bridge_max_gap = 4;
+-    cfg.bridge_max_total = 16;
++    cfg.bridge_max_gap = 12;
++    cfg.bridge_max_total = 24;
+     // MB_ZERO_FL=0: the per-block flag-liveness rule (before MoBetta 0003).
+     const char* zero_fl = std::getenv("MB_ZERO_FL");
+     cfg.bridge_zero_fl = (zero_fl != nullptr && zero_fl[0] == '0') ? 0 : 1;

@@ -2,7 +2,8 @@
 # MoBetta - Build x87sidecar (athei/x87sidecar, MIT) at the pinned commit
 # Applies patches/x87sidecar/*.patch in order (0001 bridges x87 runs across flag-dead shifts,
 # 0002 across push/pop and mov [m],imm, 0003 in blocks with all-zero flag liveness,
-# 0004 keeps binary64 x87 slots in a tagged form across replies).
+# 0004 keeps binary64 x87 slots in a tagged form across replies, 0005 bridges movzx/movsx from
+# 8/16-bit memory and widens the gap limits to 12 / 24).
 #
 # patches/0003 starts i386 processes under it from wine/bin/x87sidecar.
 # Output: build/out/x87sidecar (arm64, ad-hoc signed), checked against the pinned SHA-256.
@@ -18,7 +19,7 @@ ROOT="$PWD"
 
 SIDECAR_URL="https://github.com/athei/x87sidecar.git"
 SIDECAR_COMMIT="499e0f7e60d2961d379df459dd96bc79ecfe59fd"
-SIDECAR_SHA256="01e2aa9c9717c33f17882f51c9519c3ec749b778847268f04863e0a2e4d807f5"
+SIDECAR_SHA256="47b8d85ee1f9c080ec4f96110fc74e5409d46e24185079dced7d212102e824f1"
 
 SRC="$ROOT/build/x87sidecar"
 BUILD="$SRC/build"
