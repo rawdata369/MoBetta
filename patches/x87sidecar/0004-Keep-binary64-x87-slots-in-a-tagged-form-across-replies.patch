@@ -1,0 +1,935 @@
+MoBetta: x87sidecar: Keep binary64 x87 slots in a tagged form across replies.
+
+With X87_NATIVE_SLOTS a slot the reply left as binary64 (kSlotF64) was
+converted to the 80-bit format at every reply end (normal, zero,
+subnormal and inf/NaN cases, ~15-20 ARM instructions per slot), because
+anything outside the sidecar might read the 80-bit slot. In WoW's cull loop
+the next reply reads the value straight back as binary64.
+
+A slot is now stored tagged: bytes 0-7 are the binary64 bits with the sign
+cleared (so the explicit integer bit, bit 63, is 0), bytes 8-9 are
+sign<<15 | 0x7FFF. That is the pseudo-infinity/pseudo-NaN range, which no
+x87 arithmetic produces; it survives any byte copy and costs 5
+instructions to write. Test: (exp|0x8000)+1 carries into bit 16 and
+mantissa bit 63 is clear.
+
+Readers decode the tag: the native load path, exact fist/fistp/fisttp,
+fstp m80 and fsave into guest memory, and fst m32. fld m80 and frstor
+turn a guest value already in the tagged range into the indefinite
+(0xC000000000000000 / 0xFFFF), so guest data never passes for a tag.
+Before the first x87 request of a block that stock Rosetta will
+translate (allocation decline, X87_STOCK_BCD, stock hash/op lists,
+unhandled ops, fxsave, fstenv), the sidecar replies with code that untags
+all 8 slots and consumes no instruction; the re-ask for the same
+instruction gets None, and later stock requests in that stretch skip the
+untag. fclex, finit, fldenv and fxrstor need no untag.
+
+Deviations, documented in TranslatorX87F80.hpp:
+- A signal handler that inspects saved x87 registers (or the trace tool)
+  sees the tagged bytes; fxsave goes through stock after an untag, so its
+  image is genuine.
+- A hand-made pseudo-NaN/pseudo-infinity loaded with fld m80 or frstor
+  becomes the indefinite (the fused fld m80; fstp m80 copy stays exact).
+- Such a value loaded by stock code (after a decline) is later read as a
+  tag.
+- MMX reading registers last written by x87 sees the tagged bits.
+X87_TAGGED_SLOTS=0 restores the 0003 behaviour (on by default only with
+native slots).
+
+Tests: tests/x87_tagged.h decodes tags; test_x87_signal_context,
+test_x87_sync_fault and the trace analyzer decode them; test_x87_cross_
+reply_exact accepts the indefinite for tagged-range values and skips them
+under X87_FAIL_ALLOC_EVERY. Suite 1468 passed, 0 failed, 2 known stock
+divergences. MoBetta bench under Wine (5 interleaved runs, medians):
+shift 202 -> 174 ms, stack 316 -> 295 ms, bits identical
+(X87_TAGGED_SLOTS=0: 202 / 312). In game at the Dalaran fountain: a solid
+45-60 FPS depending on player load, vs 40-55 with spikes into the 60s on
+0003.
+
+diff --git a/rosetta_core/include/rosetta_core/Config.h b/rosetta_core/include/rosetta_core/Config.h
+index 7819e5e..e11d359 100644
+--- a/rosetta_core/include/rosetta_core/Config.h
++++ b/rosetta_core/include/rosetta_core/Config.h
+@@ -180,6 +180,13 @@ struct RosettaConfig {
+                                       //                           instead of the compact layout,
+                                       //                           and converts per slot.  =0 is
+                                       //                           the kill switch.
++    uint8_t tagged_slots;             // X87_TAGGED_SLOTS          (default ON, needs
++                                      //                           native_slots) a reply leaves a
++                                      //                           register it holds in binary64
++                                      //                           in its slot as a tagged binary64
++                                      //                           (TranslatorX87F80.hpp) instead
++                                      //                           of converting it back to 80
++                                      //                           bits.  =0 is the kill switch.
+ 
+     // X87_BRIDGE_HASH_LIST / X87_NO_BRIDGE_HASH_LIST — per-block bridging
+     // bisect, same semantics and hash key as the rollback lists above:
+diff --git a/rosetta_core/include/rosetta_core/Translator.h b/rosetta_core/include/rosetta_core/Translator.h
+index cc30a24..a4d3873 100644
+--- a/rosetta_core/include/rosetta_core/Translator.h
++++ b/rosetta_core/include/rosetta_core/Translator.h
+@@ -11,4 +11,11 @@ namespace Translator {
+ auto translate_instruction(TranslationResult* translation_result, IRBlock* block,
+                            IRInstr* instr_array, int64_t num_instrs, int64_t insn_idx)
+     -> std::optional<int64_t>;
++
++// A request the loader hands to stock whole (X87_STOCK_HASH_LIST,
++// X87_STOCK_OPS, X87_STOCK_BCD), without the translator.  With
++// X87_TAGGED_SLOTS the first one of a block may get a reply that untags the
++// x87 slots and consumes no instruction (Some(insn_idx)); otherwise None.
++auto stock_request(TranslationResult* translation_result, IRBlock* block, IRInstr* instr_array,
++                   int64_t num_instrs, int64_t insn_idx) -> std::optional<int64_t>;
+ };
+\ No newline at end of file
+diff --git a/rosetta_core/include/rosetta_core/TranslatorX87F80.hpp b/rosetta_core/include/rosetta_core/TranslatorX87F80.hpp
+index d32e12d..d971c1b 100644
+--- a/rosetta_core/include/rosetta_core/TranslatorX87F80.hpp
++++ b/rosetta_core/include/rosetta_core/TranslatorX87F80.hpp
+@@ -65,6 +65,51 @@ void emit_f80_bits_to_f64(AssemblerBuffer& buf, int Xm, int Wx, int Xt1, int Xt2
+ // clobbered; Xaddr is not.
+ void emit_f64_bits_to_f80(AssemblerBuffer& buf, int Xaddr, int Xb, int We, int Wt);
+ 
++// The same conversion in registers: Xb becomes the significand and We the
++// sign and exponent halfword.  Wt is clobbered.
++void emit_f64_bits_to_f80_regs(AssemblerBuffer& buf, int Xb, int We, int Wt);
++
++// X87_TAGGED_SLOTS.  A register the sidecar holds in binary64 is left in its
++// slot as a tagged binary64: bytes 0-7 are the binary64 bits with the sign
++// cleared, bytes 8-9 are the sign at bit 15 above exponent 0x7FFF.  As an
++// 80-bit value that is a pseudo-infinity or pseudo-NaN, an encoding the x87
++// never produces and reads as an invalid operand, so the ten bytes say which
++// format they are in and stay right through any copy that moves them as
++// bytes: fxch, fld st(i), the signal context, fxsave/fxrstor, the thread
++// state.  The sidecar's readers decode it (emit_f80_bits_to_f64,
++// emit_f80_slot_to_int, emit_f80_untag_regs), whatever writes 80-bit values
++// to guest memory converts it first, an 80-bit load from guest memory turns
++// a genuine pseudo-infinity or pseudo-NaN into the indefinite it reads as,
++// and stock code, which would read it as the default NaN, is entered only
++// after emit_untag_all_slots.  Code that inspects the saved bytes (a signal
++// handler reading the context's registers, an fxsave image read as data)
++// sees the tagged form.
++bool tagged_slots_enabled();
++
++// emit_f64_bits_to_slot: the end of a reply writing the binary64 bits in Xb
++// back to the slot at Xaddr: tagged, or as emit_f64_bits_to_f80 with
++// X87_TAGGED_SLOTS=0.  Xb, We and Wt are clobbered.
++void emit_f64_bits_to_slot(AssemblerBuffer& buf, int Xaddr, int Xb, int We, int Wt);
++
++// Xm:Wx is a slot image (Wx as LDRH leaves it).  A tagged binary64 becomes
++// its 80-bit value; anything else is left as it is.  Wt is clobbered.
++// No NZCV write; branches go forward.
++void emit_f80_untag_regs(AssemblerBuffer& buf, int Xm, int Wx, int Wt);
++
++// Xm:Wx is an 80-bit value from guest memory.  With X87_TAGGED_SLOTS, one
++// in the tagged range (a pseudo-infinity or pseudo-NaN, an invalid operand)
++// becomes the indefinite, as the x87 loads it, so no guest value can pass
++// for a tagged binary64.  Emits nothing with X87_TAGGED_SLOTS=0.  Wt is
++// clobbered.
++void emit_f80_reject_tag_regs(AssemblerBuffer& buf, int Xm, int Wx, int Wt);
++
++// Converts every tagged slot of the register file to its 80-bit value, in
++// place, whatever TOP and the tags say.  For the entry of stock code.
++// Takes four scratch GPRs from the free mask without the allocator, and
++// emits nothing and returns false when there are not four.  Preserves NZCV
++// and allocator masks.  Must run outside an active run.
++bool emit_untag_all_slots(TranslationResult& tr);
++
+ // Copies the ten bytes at [Xsrc, #src_off] to [Xdst, #dst_off] as an 8-byte
+ // and a 2-byte access on each side, both loads before the stores.  A guest
+ // operand that is naturally aligned stays so for both accesses, which
+diff --git a/rosetta_core/include/rosetta_core/X87Cache.h b/rosetta_core/include/rosetta_core/X87Cache.h
+index ef68dd4..80c8037 100644
+--- a/rosetta_core/include/rosetta_core/X87Cache.h
++++ b/rosetta_core/include/rosetta_core/X87Cache.h
+@@ -116,6 +116,20 @@ struct X87Cache {
+     int32_t declined_num_instrs = 0;
+     uint32_t declined_start_pc = 0;
+ 
++    // X87_TAGGED_SLOTS: stock reads a tagged slot as the default NaN, so the
++    // first x87 request that goes to stock after sidecar code gets a reply of
++    // its own that converts every tagged slot back to 80 bits and consumes no
++    // instruction (Translator::stock_entry).  untag_pending names that reply
++    // by block, index and the end of the code it emitted, so the re-ask that
++    // follows it is told None; untag_done_* is the stock stretch that follows,
++    // in which later requests need no such reply until the sidecar emits
++    // code again.
++    const IRBlock* untag_pending_block = nullptr;
++    int32_t untag_pending_idx = -1;
++    uint64_t untag_pending_end = 0;
++    const IRBlock* untag_done_block = nullptr;
++    int32_t untag_done_idx = -1;
++
+     // Stock's free_gpr_mask word as it arrived at the current x87 entry
+     // (run start or isolated op).  Stock's translate_insn carries its
+     // register-allocator state across a block in this TR field; every
+diff --git a/rosetta_core/src/ConfigEnv.cpp b/rosetta_core/src/ConfigEnv.cpp
+index c28b65d..2b261cb 100644
+--- a/rosetta_core/src/ConfigEnv.cpp
++++ b/rosetta_core/src/ConfigEnv.cpp
+@@ -151,6 +151,10 @@ RosettaConfig load_config_from_env() {
+     // Native slots (X87Cache::native_slots).  Default ON; =0 is the kill
+     // switch that restores the compact binary64 register file.
+     cfg.native_slots = env_default_on("X87_NATIVE_SLOTS");
++    // Tagged slots (TranslatorX87F80.hpp).  Default ON with the native
++    // slots; =0 is the kill switch that converts back to 80 bits at the end
++    // of every reply.
++    cfg.tagged_slots = cfg.native_slots != 0 && env_default_on("X87_TAGGED_SLOTS") ? 1 : 0;
+     // X87_PRECISE_FAULTS: 1 probes the first access of each reply; 2 also
+     // ends a run before each later access, which needs the native slots.
+     {
+diff --git a/rosetta_core/src/Translator.cpp b/rosetta_core/src/Translator.cpp
+index 97f2248..0ab0ecd 100644
+--- a/rosetta_core/src/Translator.cpp
++++ b/rosetta_core/src/Translator.cpp
+@@ -577,8 +577,8 @@ static void emit_fault_probe(TranslationResult& tr, IRInstr& insn) {
+     tr.free_gpr_mask = saved_mask;
+ }
+ 
+-auto Translator::translate_instruction(TranslationResult* translation_result, IRBlock* block,
+-                                       IRInstr* instr_array, int64_t num_instrs, int64_t insn_idx)
++static auto translate_request(TranslationResult* translation_result, IRBlock* block,
++                              IRInstr* instr_array, int64_t num_instrs, int64_t insn_idx)
+     -> std::optional<int64_t> {
+     auto& cache = translation_result->x87_cache;
+     const auto start = translation_result->insn_buf.end;
+@@ -730,6 +730,107 @@ auto Translator::translate_instruction(TranslationResult* translation_result, IR
+     return ret;
+ }
+ 
++// X87_TAGGED_SLOTS: stock reads a tagged slot as the default NaN.  The x87
++// state is complete in memory at every request boundary, so before the
++// first request of a stretch that stock translates, the sidecar answers
++// with a reply of its own that converts every tagged slot back to 80 bits
++// and consumes no instruction: Some(insn_idx).  Stock asks for the same
++// instruction again, gets None and translates it.  That reply has its own
++// instruction-map entry at the instruction, so a signal in it resumes at
++// stock's code for the same instruction, with the state complete.  The
++// stretch lasts until the sidecar emits code again; stock code in it reads
++// and writes 80-bit values only.  A stretch is a block's code from one
++// instruction on, entered only from its start (stock moves to another
++// block, or starts this one over, before anything else can run first).
++static bool stock_reads_slots(uint16_t op) {
++    return is_x87_opcode(op) && op != kOpcodeName_fclex && op != kOpcodeName_finit &&
++           op != kOpcodeName_fldenv && op != kOpcodeName_fxrstor;
++}
++
++namespace {
++struct StockEntry {
++    TranslationResult* tr;
++    const IRBlock* block;
++    int64_t insn_idx;
++
++    // The re-ask after the untag reply: stock translates the instruction.
++    bool is_reask() const {
++        auto& c = tr->x87_cache;
++        const bool hit = c.untag_pending_block == block && c.untag_pending_idx == insn_idx &&
++                         c.untag_pending_end == tr->insn_buf.end;
++        c.untag_pending_block = nullptr;
++        if (hit) {
++            c.untag_done_block = block;
++            c.untag_done_idx = static_cast<int32_t>(insn_idx);
++        }
++        return hit;
++    }
++
++    // None goes to stock: the untag reply first, unless this request is
++    // inside a stretch already entered.
++    std::optional<int64_t> before_stock(uint16_t op) const {
++        auto& c = tr->x87_cache;
++        if (!TranslatorX87::tagged_slots_enabled() || !stock_reads_slots(op) ||
++            (c.untag_done_block == block && insn_idx > c.untag_done_idx)) {
++            return std::nullopt;
++        }
++        const auto saved_end = tr->insn_buf.end;
++        if (!TranslatorX87::emit_untag_all_slots(*tr)) {
++            tr->insn_buf.end = saved_end;
++            static int short_count = 0;
++            if (++short_count <= 10) {
++                std::fprintf(stdout,
++                             "[rosettax87] no four free GPRs to untag the x87 slots before "
++                             "stock at insn_idx=%lld; stock may read a tagged slot (#%d)\n",
++                             static_cast<long long>(insn_idx), short_count);
++                std::fflush(stdout);
++            }
++            return std::nullopt;
++        }
++        c.untag_pending_block = block;
++        c.untag_pending_idx = static_cast<int32_t>(insn_idx);
++        c.untag_pending_end = tr->insn_buf.end;
++        c.last_next_idx = -1;
++        return insn_idx;
++    }
++};
++}  // namespace
++
++auto Translator::translate_instruction(TranslationResult* translation_result, IRBlock* block,
++                                       IRInstr* instr_array, int64_t num_instrs, int64_t insn_idx)
++    -> std::optional<int64_t> {
++    const StockEntry entry{.tr = translation_result, .block = block, .insn_idx = insn_idx};
++    if (entry.is_reask()) {
++        translation_result->x87_cache.last_next_idx = -1;
++        return std::nullopt;
++    }
++    auto ret = translate_request(translation_result, block, instr_array, num_instrs, insn_idx);
++    if (ret.has_value()) {
++        if (*ret > insn_idx) {
++            translation_result->x87_cache.untag_done_block = nullptr;
++        }
++        return ret;
++    }
++    return entry.before_stock(instr_array[insn_idx].opcode());
++}
++
++auto Translator::stock_request(TranslationResult* translation_result, IRBlock* block,
++                               IRInstr* instr_array, int64_t num_instrs, int64_t insn_idx)
++    -> std::optional<int64_t> {
++    (void)num_instrs;
++    auto& cache = translation_result->x87_cache;
++    // As for any None reply that skips the translator: stock's code clobbers
++    // the registers a cached run would trust.
++    cache.invalidate();
++    cache.prev_block = nullptr;
++    const StockEntry entry{.tr = translation_result, .block = block, .insn_idx = insn_idx};
++    if (entry.is_reask()) {
++        cache.last_next_idx = -1;
++        return std::nullopt;
++    }
++    return entry.before_stock(instr_array[insn_idx].opcode());
++}
++
+ static auto translate_instruction_impl(TranslationResult* translation_result, IRBlock* block,
+                                        IRInstr* instr_array, int64_t num_instrs, int64_t insn_idx)
+     -> std::optional<int64_t> {
+diff --git a/rosetta_core/src/TranslatorX87.cpp b/rosetta_core/src/TranslatorX87.cpp
+index c8d8808..bab3707 100644
+--- a/rosetta_core/src/TranslatorX87.cpp
++++ b/rosetta_core/src/TranslatorX87.cpp
+@@ -258,11 +258,17 @@ auto translate_fld(TranslationResult* a1, IRInstr* a2) -> void {
+ 
+         if (a1->x87_cache.native_slots) {
+             // X87_NATIVE_SLOTS: the new register takes the ten bytes as they
+-            // are and stays in the 80-bit format until something reads it.
+-            emit_native_st_addr(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Xst_base);
++            // are and stays in the 80-bit format until something reads it;
++            // with X87_TAGGED_SLOTS, a value in the tagged range becomes
++            // the indefinite.  Both loads come first, as in emit_copy_f80.
+             const int Xt1 = alloc_free_gpr(*a1);
+             const int Xt2 = alloc_free_gpr(*a1);
+-            emit_copy_f80(buf, Wd_tmp, 0, Xaddr, 0, Xt1, Xt2);
++            emit_ldur_stur(buf, 3, /*LDUR*/ 1, 0, Xaddr, Xt1);
++            emit_ldur_stur(buf, 1, /*LDURH*/ 1, 8, Xaddr, Xt2);
++            emit_f80_reject_tag_regs(buf, Xt1, Xt2, Wd_tmp);
++            emit_native_st_addr(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Xst_base);
++            emit_ldur_stur(buf, 3, /*STUR*/ 0, 0, Wd_tmp, Xt1);
++            emit_ldur_stur(buf, 1, /*STURH*/ 0, 8, Wd_tmp, Xt2);
+             free_gpr(*a1, Xt2);
+             free_gpr(*a1, Xt1);
+             free_gpr(*a1, Xaddr);
+@@ -1393,13 +1399,20 @@ auto translate_fst(TranslationResult* a1, IRInstr* a2) -> void {
+ 
+         if (x87_slot_holds_f80_at(resolve_depth(*a1, 0))) {
+             // X87_NATIVE_SLOTS: ST(0) still holds an 80-bit image; store
+-            // the ten bytes as they are.
++            // the ten bytes as they are, a tagged binary64 as its 80-bit
++            // value.  The slot address is dead once both halves are loaded.
+             emit_native_st_addr(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Xst_base);
+             const int Xaddr =
+                 compute_operand_address(*a1, /*is_64bit=*/true, &a2->operands[0], GPR::XZR);
+             const int Xt1 = alloc_free_gpr(*a1);
+             const int Xt2 = alloc_free_gpr(*a1);
+-            emit_copy_f80(buf, Xaddr, 0, Wd_tmp, 0, Xt1, Xt2);
++            emit_ldur_stur(buf, 3, /*LDUR*/ 1, 0, Wd_tmp, Xt1);
++            emit_ldur_stur(buf, 1, /*LDURH*/ 1, 8, Wd_tmp, Xt2);
++            if (tagged_slots_enabled()) {
++                emit_f80_untag_regs(buf, Xt1, Xt2, Wd_tmp);
++            }
++            emit_ldur_stur(buf, 3, /*STUR*/ 0, 0, Xaddr, Xt1);
++            emit_ldur_stur(buf, 1, /*STURH*/ 0, 8, Xaddr, Xt2);
+             free_gpr(*a1, Xt2);
+             free_gpr(*a1, Xt1);
+             free_gpr(*a1, Xaddr);
+@@ -4279,7 +4292,8 @@ auto translate_frstor(TranslationResult* a1, IRInstr* a2) -> void {
+     // per slot, which is fine for this correctness-only opcode).
+     if (a1->x87_cache.native_slots) {
+         // X87_NATIVE_SLOTS: the registers stay 80-bit, so each slot takes
+-        // the ten bytes of the image as they are.  Physical slot (TOP + i)
++        // the ten bytes of the image as they are (a value in the tagged
++        // range as the indefinite, emit_f80_reject_tag_regs).  Physical slot (TOP + i)
+         // gets ST(i).
+         const int Xst = x87_get_st_base(*a1);  // -1 in standalone
+         const int Xslot = writable_addr_reg(*a1, Xaddr);
+@@ -4290,6 +4304,7 @@ auto translate_frstor(TranslationResult* a1, IRInstr* a2) -> void {
+                          /*shift=*/0, (i == 0) ? 0x1C : 10, (i == 0) ? Xaddr : Xslot, Xslot);
+             emit_ldr_imm(buf, /*size=*/3, Xmant, Xslot, /*imm12=*/0);
+             emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*opc=*/1, /*imm12=*/4, Xslot, Wexp);
++            emit_f80_reject_tag_regs(buf, Xmant, Wexp, Wd_tmp);
+             emit_native_st_addr(buf, Xbase, Wd_top, i, Wd_tmp, Xst);
+             emit_ldr_str_imm(buf, 3, 0, /*STR*/ 0, 0, Wd_tmp, Xmant);
+             emit_ldr_str_imm(buf, 1, 0, /*STRH*/ 0, 4, Wd_tmp, Wexp);
+@@ -4466,10 +4481,13 @@ auto translate_fsave(TranslationResult* a1, IRInstr* a2) -> void {
+         const int delta = (i == 0) ? 0x1C : 10;
+         if (x87_slot_holds_f80_at(i)) {
+             // X87_NATIVE_SLOTS: an 80-bit slot goes into the image as its
+-            // ten bytes.
++            // ten bytes, a tagged binary64 as its 80-bit value.
+             emit_native_st_addr(buf, Xbase, Wd_top, i, Wd_tmp, Xst_base);
+             emit_ldr_str_imm(buf, 3, 0, /*LDR*/ 1, 0, Wd_tmp, Xbits);
+             emit_ldr_str_imm(buf, 1, 0, /*LDRH*/ 1, 4, Wd_tmp, Wexp);
++            if (tagged_slots_enabled()) {
++                emit_f80_untag_regs(buf, Xbits, Wexp, Wd_tmp);
++            }
+             emit_add_imm(buf, /*is_64bit=*/1, /*is_sub=*/0, /*is_set_flags=*/0,
+                          /*shift=*/0, delta, (i == 0) ? Xaddr : Xslot, Xslot);
+             emit_ldr_str_imm(buf, 3, 0, /*STR*/ 0, 0, Xslot, Xbits);
+diff --git a/rosetta_core/src/TranslatorX87F80.cpp b/rosetta_core/src/TranslatorX87F80.cpp
+index ac221df..e1a294c 100644
+--- a/rosetta_core/src/TranslatorX87F80.cpp
++++ b/rosetta_core/src/TranslatorX87F80.cpp
+@@ -620,6 +620,18 @@ void emit_f80_bits_to_f64(AssemblerBuffer& buf, int Xm, int Wx, int Xt1, int Xt2
+     const auto integer_bit = emit_tbz_fwd(buf, 1, Xm, 63);
+     and_mask(buf, 0, Xt1, Wx, 0x7fff);
+     const auto exponent_zero = emit_cbz_fwd(buf, 0, 0, Xt1);
++    // A tagged binary64 (exponent 0x7FFF, integer bit clear) is the
++    // binary64 with its sign moved to bit 15 of the halfword.
++    uint64_t done_tagged = 0;
++    const bool tagged = tagged_slots_enabled();
++    if (tagged) {
++        emit_add_imm(buf, 0, 0, 0, 0, 1, Xt1, Xt2);  // exp + 1: bit 15 iff exp == 0x7FFF
++        const auto not_tagged = emit_tbz_fwd(buf, 0, Xt2, 15);
++        emit_bitfield(buf, 0, /*UBFM*/ 2, 0, 15, 15, Wx, Xt2);  // sign
++        emit_bitfield(buf, 1, /*BFM*/ 1, 1, 1, 0, Xt2, Xm);      // BFI Xm, Xt2, #63, #1
++        done_tagged = emit_b_fwd(buf);
++        bind_imm14(buf, not_tagged);
++    }
+     emit_movn(buf, 1, /*MOVZ*/ 2, 3, 0xfff8, Xm);  // 0xFFF8000000000000
+     const auto done_invalid = emit_b_fwd(buf);
+     bind_imm14(buf, integer_bit);
+@@ -732,14 +744,18 @@ void emit_f80_bits_to_f64(AssemblerBuffer& buf, int Xm, int Wx, int Xt1, int Xt2
+     bind_imm26(buf, done_normal);
+     bind_imm26(buf, done_small);
+     bind_imm26(buf, done_tiny);
++    if (tagged) {
++        bind_imm26(buf, done_tagged);
++    }
+     bind_imm26(buf, done_invalid);
+ }
+ 
+ // Normal, zero, subnormal (normalised with CLZ, every bit kept) and
+ // infinity or NaN (integer bit set, exponent 0x7FFF), as emit_f64_to_f80.
+ // The infinity test is exponent + 1 reaching bit 11, where that version
+-// compares.
+-void emit_f64_bits_to_f80(AssemblerBuffer& buf, int Xaddr, int Xb, int We, int Wt) {
++// compares.  In registers: Xb becomes the significand, We the sign and
++// exponent halfword.
++void emit_f64_bits_to_f80_regs(AssemblerBuffer& buf, int Xb, int We, int Wt) {
+     emit_bitfield(buf, 1, 2, 1, 52, 62, Xb, We);  // UBFX We, Xb, #52, #11
+     emit_bitfield(buf, 1, 2, 1, 48, 63, Xb, Wt);  // LSR Wt, Xb, #48
+     and_mask(buf, 0, Wt, Wt, 0x8000);             // sign at bit 15
+@@ -751,8 +767,6 @@ void emit_f64_bits_to_f80(AssemblerBuffer& buf, int Xaddr, int Xb, int We, int W
+     emit_add_imm(buf, 0, 0, 0, 1, 3, We, We);      // +12288
+     emit_add_imm(buf, 0, 0, 0, 0, 0xbff, We, We);  // +3071: exp + 15360 in all
+     emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wt, 0, We, We);
+-    emit_str_imm(buf, 3, Xb, Xaddr, 0);
+-    emit_str_imm(buf, 1, We, Xaddr, 4);
+     const auto done_normal = emit_b_fwd(buf);
+ 
+     bind_imm19(buf, zero_sub);
+@@ -763,25 +777,118 @@ void emit_f64_bits_to_f80(AssemblerBuffer& buf, int Xaddr, int Xb, int We, int W
+     emit_add_imm(buf, 0, 0, 0, 1, 3, We, We);
+     emit_add_imm(buf, 0, 0, 0, 0, 0xc01, We, We);  // 15361 - clz
+     emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wt, 0, We, We);
+-    emit_str_imm(buf, 3, Xb, Xaddr, 0);
+-    emit_str_imm(buf, 1, We, Xaddr, 4);
+     const auto done_sub = emit_b_fwd(buf);
+     bind_imm19(buf, zero);
+-    emit_str_imm(buf, 3, 31, Xaddr, 0);
+-    emit_str_imm(buf, 1, Wt, Xaddr, 4);
++    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wt, 0, 31, We);  // MOV We, Wt
+     const auto done_zero = emit_b_fwd(buf);
+ 
+     bind_imm14(buf, inf_nan);
+     orr_mask(buf, 1, Xb, Xb, uint64_t(1) << 63);
+-    emit_str_imm(buf, 3, Xb, Xaddr, 0);
+     orr_mask(buf, 0, We, Wt, 0x7fff);
+-    emit_str_imm(buf, 1, We, Xaddr, 4);
+ 
+     bind_imm26(buf, done_normal);
+     bind_imm26(buf, done_sub);
+     bind_imm26(buf, done_zero);
+ }
+ 
++void emit_f64_bits_to_f80(AssemblerBuffer& buf, int Xaddr, int Xb, int We, int Wt) {
++    emit_f64_bits_to_f80_regs(buf, Xb, We, Wt);
++    emit_str_imm(buf, 3, Xb, Xaddr, 0);
++    emit_str_imm(buf, 1, We, Xaddr, 4);
++}
++
++bool tagged_slots_enabled() {
++    return g_rosetta_config != nullptr && g_rosetta_config->tagged_slots != 0 &&
++           g_rosetta_config->native_slots != 0;
++}
++
++// The tagged binary64: the significand field holds the binary64 bits with
++// the sign cleared, so its integer bit is clear, and the halfword holds the
++// sign at bit 15 above exponent 0x7FFF.  Five instructions, no branch.
++void emit_f64_bits_to_slot(AssemblerBuffer& buf, int Xaddr, int Xb, int We, int Wt) {
++    if (!tagged_slots_enabled()) {
++        emit_f64_bits_to_f80(buf, Xaddr, Xb, We, Wt);
++        return;
++    }
++    emit_bitfield(buf, 1, 2, 1, 48, 63, Xb, We);  // LSR We, Xb, #48
++    orr_mask(buf, 0, We, We, 0x7fff);
++    and_mask(buf, 1, Xb, Xb, 0x7fffffffffffffffULL);
++    emit_str_imm(buf, 3, Xb, Xaddr, 0);
++    emit_str_imm(buf, 1, We, Xaddr, 4);
++}
++
++// Branches to the returned TBZ/TBNZ sites when Xm:Wx is not a tagged
++// binary64; falls through when it is.  Wt is clobbered.
++static void emit_tag_test(AssemblerBuffer& buf, int Xm, int Wx, int Wt, uint64_t& not_exp,
++                          uint64_t& not_j) {
++    orr_mask(buf, 0, Wt, Wx, 0x8000);
++    emit_add_imm(buf, 0, 0, 0, 0, 1, Wt, Wt);  // bit 16 iff exponent 0x7FFF
++    not_exp = emit_tbz_fwd(buf, 0, Wt, 16);
++    not_j = emit_tbz_fwd(buf, 1, Xm, 63);
++}
++
++void emit_f80_untag_regs(AssemblerBuffer& buf, int Xm, int Wx, int Wt) {
++    uint64_t not_exp = 0;
++    uint64_t not_j = 0;
++    emit_tag_test(buf, Xm, Wx, Wt, not_exp, not_j);
++    emit_bitfield(buf, 0, 2, 0, 15, 15, Wx, Wt);  // sign
++    emit_bitfield(buf, 1, 1, 1, 1, 0, Wt, Xm);    // BFI Xm, Xt, #63, #1
++    emit_f64_bits_to_f80_regs(buf, Xm, Wx, Wt);
++    bind_imm14(buf, not_exp);
++    bind_imm14(buf, not_j);
++}
++
++void emit_f80_reject_tag_regs(AssemblerBuffer& buf, int Xm, int Wx, int Wt) {
++    if (!tagged_slots_enabled()) {
++        return;
++    }
++    uint64_t not_exp = 0;
++    uint64_t not_j = 0;
++    emit_tag_test(buf, Xm, Wx, Wt, not_exp, not_j);
++    emit_movn(buf, 1, /*MOVZ*/ 2, 3, 0xc000, Xm);  // the indefinite
++    emit_movn(buf, 0, /*MOVZ*/ 2, 0, 0xffff, Wx);
++    bind_imm14(buf, not_exp);
++    bind_imm14(buf, not_j);
++}
++
++bool emit_untag_all_slots(TranslationResult& tr) {
++    // Registers straight from the free mask, not through the allocator: this
++    // is what a declined request falls back on, so neither a real nor an
++    // injected allocation failure may stop it.
++    uint32_t mask = tr.free_gpr_mask & kGprScratchMask;
++    int regs[4];
++    for (int& r : regs) {
++        if (mask == 0) {
++            return false;
++        }
++        r = __builtin_ctz(mask);
++        mask &= mask - 1;
++    }
++    const int base = regs[0];
++    const int m = regs[1];
++    const int x = regs[2];
++    const int t = regs[3];
++    auto& buf = tr.insn_buf;
++    emit_x87_base(buf, tr, base);
++    for (int i = 0; i < 8; ++i) {
++        const auto off = static_cast<int16_t>(kX87NativeSlotOff + 10 * i);
++        emit_ldur_stur(buf, 1, /*LDURH*/ 1, static_cast<int16_t>(off + 8), base, x);
++        orr_mask(buf, 0, t, x, 0x8000);
++        emit_add_imm(buf, 0, 0, 0, 0, 1, t, t);
++        const auto not_exp = emit_tbz_fwd(buf, 0, t, 16);
++        emit_ldur_stur(buf, 3, /*LDUR*/ 1, off, base, m);
++        const auto not_j = emit_tbz_fwd(buf, 1, m, 63);
++        emit_bitfield(buf, 0, 2, 0, 15, 15, x, t);
++        emit_bitfield(buf, 1, 1, 1, 1, 0, t, m);
++        emit_f64_bits_to_f80_regs(buf, m, x, t);
++        emit_ldur_stur(buf, 3, /*STUR*/ 0, off, base, m);
++        emit_ldur_stur(buf, 1, /*STURH*/ 0, static_cast<int16_t>(off + 8), base, x);
++        bind_imm14(buf, not_exp);
++        bind_imm14(buf, not_j);
++    }
++    return true;
++}
++
+ // X87_NATIVE_SLOTS keeps each working binary64 value inside its own native
+ // slot, and the slot tracker knows statically which slots the reply left in
+ // binary64 (X87Cache::slot_fmt).  Those are converted back in place; slots
+@@ -818,7 +925,7 @@ void emit_native_slots_export(TranslationResult& tr) {
+         emit_add_imm(buf, 0, 0, 0, 0, kX87NativeSlotOff, addr, addr);
+         emit_add_sub_shifted_reg(buf, 1, 0, 0, 0, addr, 0, base, addr);
+         emit_ldr_str_imm(buf, 3, 0, /*LDR*/ 1, 0, addr, bits);
+-        emit_f64_bits_to_f80(buf, addr, bits, exp, tmp);
++        emit_f64_bits_to_slot(buf, addr, bits, exp, tmp);
+     }
+     tr.free_gpr_mask = saved_mask;
+ }
+@@ -942,6 +1049,9 @@ void emit_f80_slot_to_int(AssemblerBuffer& buf, int Xbase, int Xslot, int Xint,
+ 
+     emit_ldr_str_imm(buf, 3, 0, 1, 0, Xslot, Xm);  // LDR  Xm, [Xslot]
+     emit_ldr_str_imm(buf, 1, 0, 1, 4, Xslot, Wx);  // LDRH Wx, [Xslot, #8]
++    if (tagged_slots_enabled()) {
++        emit_f80_untag_regs(buf, Xm, Wx, Xint);
++    }
+     LogicalImmEncoding exp15;
+     is_bitmask_immediate(false, 0x7fff, exp15);
+     emit_and_imm(buf, 0, We, exp15.N, exp15.immr, exp15.imms, Wx);
+diff --git a/rosetta_core/src/TranslatorX87Single.cpp b/rosetta_core/src/TranslatorX87Single.cpp
+index 41a3c15..c3398e8 100644
+--- a/rosetta_core/src/TranslatorX87Single.cpp
++++ b/rosetta_core/src/TranslatorX87Single.cpp
+@@ -166,7 +166,7 @@ void translate_fld_single(TranslationResult& a1, IRInstr* a2) {
+         emit_add_sub_shifted_reg(buf, /*is_64bit=*/1, /*sub=*/0, 0, /*LSL*/ 0, Widx, 0, Xbase,
+                                  Widx);
+         emit_fmov_d_to_x(buf, Xb, Dd);
+-        emit_f64_bits_to_f80(buf, Widx, Xb, We, Wt);
++        emit_f64_bits_to_slot(buf, Widx, Xb, We, Wt);
+         free_gpr(a1, Wt);
+         free_gpr(a1, We);
+         free_gpr(a1, Xb);
+diff --git a/rosetta_loader/src/sidecar.cpp b/rosetta_loader/src/sidecar.cpp
+index d36d796..53dfb5e 100644
+--- a/rosetta_loader/src/sidecar.cpp
++++ b/rosetta_loader/src/sidecar.cpp
+@@ -2486,6 +2486,17 @@ TranslateOutcome processTranslateRequest(mach_port_t parentTask, const Translate
+         if (result.has_value()) {
+             irc.next_idx = result.value();
+         }
++    } else {
++        // The block goes to stock; with X87_TAGGED_SLOTS its first x87
++        // request may get the reply that untags the slots first.
++        // stock_request invalidates the cache as the bypass guard would.
++        _bypass_guard.ran_translator = true;
++        result = Translator::stock_request(
++            &tr, reinterpret_cast<IRBlock*>(req.block), localIR,
++            static_cast<int64_t>(req.num_instrs), static_cast<int64_t>(req.insn_idx));
++        if (result.has_value()) {
++            irc.next_idx = result.value();
++        }
+     }
+ 
+     // Capture growth state. If insn_buf grew, Translator's grow() abandoned
+@@ -2647,6 +2658,38 @@ TranslateOutcome processTranslateRequest(mach_port_t parentTask, const Translate
+         return out;
+     }
+ 
++    // The translator ran out of scratch registers and put the request back
++    // as it found it (Translator::translate_instruction).  Stock translates
++    // this instruction and the rest of the block, whose requests come back
++    // declined without a line of their own; with X87_TAGGED_SLOTS the reply
++    // to this request may be the one that untags the slots first.  One line
++    // per failure, since each one is a pressure-model bug.
++    auto logAllocDecline = [&](uint16_t op) {
++        if (!irc.hash_valid) {
++            irc.hash = profile::hash_ir_stream(localIR, req.num_instrs);
++            irc.hash_valid = true;
++        }
++        const uint64_t n = g_statAllocDeclines.fetch_add(1, std::memory_order_relaxed) + 1;
++        const char* name = (op < kOpcodeNames.size()) ? kOpcodeNames[op] : "?";
++        char line[224];
++        snprintf(line, sizeof(line),
++                 "[rosettax87] %s failed in block hash=0x%016llx at %s idx=%llu/%llu; "
++                 "declined to stock with the rest of the block (#%llu)\n",
++                 tr.alloc_failure, static_cast<unsigned long long>(irc.hash), name,
++                 static_cast<unsigned long long>(req.insn_idx),
++                 static_cast<unsigned long long>(req.num_instrs),
++                 static_cast<unsigned long long>(n));
++        fputs(line, stdout);
++        fflush(stdout);
++        if (FILE* df = diagLog()) {
++            fputs(line, df);
++            fflush(df);
++        }
++    };
++    if (result.has_value() && tr.alloc_failure != nullptr) {
++        logAllocDecline(localIR[req.insn_idx].opcode());
++    }
++
+     if (result.has_value()) {
+         out.reply_some = true;
+         out.value = result.value();
+@@ -2673,32 +2716,8 @@ TranslateOutcome processTranslateRequest(mach_port_t parentTask, const Translate
+             kOpcodeName_fxrstor,  // SSE-era extended
+         };
+         const uint16_t op = localIR[req.insn_idx].opcode();
+-        // The translator ran out of scratch registers and put the request
+-        // back as it found it (Translator::translate_instruction).  Stock
+-        // translates this instruction and the rest of the block, whose
+-        // requests come back declined without a line of their own.  One line
+-        // per failure, since each one is a pressure-model bug.
+         if (tr.alloc_failure != nullptr) {
+-            if (!irc.hash_valid) {
+-                irc.hash = profile::hash_ir_stream(localIR, req.num_instrs);
+-                irc.hash_valid = true;
+-            }
+-            const uint64_t n = g_statAllocDeclines.fetch_add(1, std::memory_order_relaxed) + 1;
+-            const char* name = (op < kOpcodeNames.size()) ? kOpcodeNames[op] : "?";
+-            char line[224];
+-            snprintf(line, sizeof(line),
+-                     "[rosettax87] %s failed in block hash=0x%016llx at %s idx=%llu/%llu; "
+-                     "declined to stock with the rest of the block (#%llu)\n",
+-                     tr.alloc_failure, static_cast<unsigned long long>(irc.hash), name,
+-                     static_cast<unsigned long long>(req.insn_idx),
+-                     static_cast<unsigned long long>(req.num_instrs),
+-                     static_cast<unsigned long long>(n));
+-            fputs(line, stdout);
+-            fflush(stdout);
+-            if (FILE* df = diagLog()) {
+-                fputs(line, df);
+-                fflush(df);
+-            }
++            logAllocDecline(op);
+         }
+         // stock_hash_hit, stock_bcd_hit: the None reply is a deliberate
+         // whole-block exclusion, not a missing handler.
+diff --git a/tests/test_x87_cross_reply_exact.c b/tests/test_x87_cross_reply_exact.c
+index 060bd32..1dbe010 100644
+--- a/tests/test_x87_cross_reply_exact.c
++++ b/tests/test_x87_cross_reply_exact.c
+@@ -33,6 +33,10 @@
+  * TOP past 0.
+  * Blocks are separated by `jmp 1f; 1:`, which ends a translation block.
+  *
++ * Under X87_TAGGED_SLOTS, a value in the tagged range (a pseudo-infinity or
++ * pseudo-NaN) is loaded as the indefinite, which is then what comes out;
++ * natively and with X87_TAGGED_SLOTS=0 it comes out as it went in.
++ *
+  * Expected: passes under stock Rosetta and under x87sidecar, fails with
+  * X87_NATIVE_SLOTS=0 (run_tests.sh checks both).
+  */
+@@ -40,6 +44,8 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
++#include "x87_tagged.h"
++
+ static int failures = 0;
+ 
+ typedef struct {
+@@ -379,8 +385,10 @@ static int int64_matches(const void* got, const void* want) {
+     return g == w || (int_stores_may_round && round_to_53_bits(g) == round_to_53_bits(w));
+ }
+ 
++/* alt, when not NULL, is a second held image a read without a reference may
++ * give: the value as loaded natively, next to its X87_TAGGED_SLOTS form. */
+ static void check_read(const middle* m, int form, int rot, const char* val, const void* src,
+-                       const f80* held, const double* out) {
++                       const f80* held, const f80* alt, const double* out) {
+     if (m->read_len == 0) {
+         return;
+     }
+@@ -391,8 +399,11 @@ static void check_read(const middle* m, int form, int rot, const char* val, cons
+         want = (const uint8_t*)ref + m->read_off;
+     }
+     const uint8_t* got = (const uint8_t*)out + m->read_off;
+-    const int same = m->int_read && m->read_len == 8 ? int64_matches(got, want)
+-                                                     : memcmp(got, want, (size_t)m->read_len) == 0;
++    int same = m->int_read && m->read_len == 8 ? int64_matches(got, want)
++                                               : memcmp(got, want, (size_t)m->read_len) == 0;
++    if (!same && m->ref[form] == NULL && alt != NULL) {
++        same = memcmp(got, alt, (size_t)m->read_len) == 0;
++    }
+     if (!same) {
+         report("read of the held value", m->name, rot, val, got, want, (size_t)m->read_len);
+     }
+@@ -435,12 +446,27 @@ int main(int argc, char** argv) {
+                 m->fn[kM80](&src, &dst, out);
+                 rotate_up(rot);
+                 cases++;
+-                if (memcmp(&dst.v, &src.v, sizeof(f80)) != 0) {
++                /* X87_TAGGED_SLOTS: fld m80 loads a value in the tagged
++                 * range as the indefinite (x87_tagged.h).  When stock does
++                 * the load, after a request declined for lack of registers
++                 * (X87_FAIL_ALLOC_EVERY), the slot keeps the bytes and the
++                 * sidecar reads them as a tagged binary64: no expectation. */
++                if (x87_tags_possible() && getenv("X87_FAIL_ALLOC_EVERY") != NULL &&
++                    x87_tagged_range(src.v.mant, src.v.sexp)) {
++                    continue;
++                }
++                f80 held = src.v;
++                if (x87_tags_possible() && x87_tagged_range(held.mant, held.sexp)) {
++                    held.mant = 0xC000000000000000ULL;
++                    held.sexp = 0xFFFF;
++                }
++                if (memcmp(&dst.v, &held, sizeof(f80)) != 0 &&
++                    memcmp(&dst.v, &src.v, sizeof(f80)) != 0) {
+                     report("fld m80 to fstp m80", m->name, rot, kF80Values[vi].name, &dst.v,
+-                           &src.v, sizeof(f80));
++                           &held, sizeof(f80));
+                 }
+                 check_middle(m, rot, out);
+-                check_read(m, kM80, rot, kF80Values[vi].name, &src, &src.v, out);
++                check_read(m, kM80, rot, kF80Values[vi].name, &src, &held, &src.v, out);
+                 check_balanced(m, rot);
+             }
+             for (size_t vi = 0; vi < sizeof(kI64Values) / sizeof(kI64Values[0]); vi++) {
+@@ -456,7 +482,8 @@ int main(int argc, char** argv) {
+                            sizeof(dst));
+                 }
+                 check_middle(m, rot, out);
+-                check_read(m, kI64, rot, kI64Values[vi].name, &src, &kI64Values[vi].as_f80, out);
++                check_read(m, kI64, rot, kI64Values[vi].name, &src, &kI64Values[vi].as_f80, NULL,
++                           out);
+                 check_balanced(m, rot);
+ 
+                 f80_slot d80;
+diff --git a/tests/test_x87_signal_context.c b/tests/test_x87_signal_context.c
+index eebad8e..4f17166 100644
+--- a/tests/test_x87_signal_context.c
++++ b/tests/test_x87_signal_context.c
+@@ -5,6 +5,9 @@
+  * Both long mode and an LDT compatibility segment run the issue #23 chain.
+  * Long mode also holds an int64 of 2^53 or more on the stack between a fild
+  * and a fistp in separate blocks, whose f80 must be exact in the context.
++ * Under X87_TAGGED_SLOTS a register held in binary64 is in the context as a
++ * tagged binary64, which the handler decodes (x87_tagged.h); a value it
++ * writes back in the 80-bit format is read as such.
+  */
+ #include <architecture/i386/desc.h>
+ #include <architecture/i386/table.h>
+@@ -21,6 +24,8 @@
+ #include <time.h>
+ #include <unistd.h>
+ 
++#include "x87_tagged.h"
++
+ static int failures;
+ static struct {
+     double x;
+@@ -82,6 +87,7 @@ static void handler(int sig, siginfo_t* info, void* context) {
+         uint16_t exp, want_exp;
+         memcpy(&mant, slot, 8);
+         memcpy(&exp, slot + 8, 2);
++        x87_untag(&mant, &exp);
+         observations++;
+         i64_to_f80(tinput.value, &want_mant, &want_exp);
+         if (mant != want_mant || exp != want_exp) {
+@@ -105,6 +111,7 @@ static void handler(int sig, siginfo_t* info, void* context) {
+         uint16_t exp;
+         memcpy(&mant, slot, 8);
+         memcpy(&exp, slot + 8, 2);
++        x87_untag(&mant, &exp);
+         observations++;
+         /* The chain yields positive, normal doubles for these inputs. Round the
+          * native significand to nearest-even without using the handler FPU. */
+diff --git a/tests/test_x87_sync_fault.c b/tests/test_x87_sync_fault.c
+index 79138b1..8a4cac7 100644
+--- a/tests/test_x87_sync_fault.c
++++ b/tests/test_x87_sync_fault.c
+@@ -59,6 +59,8 @@
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
++#include "x87_tagged.h"
++
+ /* Layout shared with the assembly below. */
+ struct io {
+     double v[4];          /* 0x00 */
+@@ -718,7 +720,9 @@ static int check_context(const struct test_case* c, const char* how, const uint8
+         const int phys = (top + k) & 7;
+         if (!(valid >> phys & 1))
+             continue;
+-        /* The signal context holds physical slots. */
++        /* The signal context holds physical slots, a register held in
++         * binary64 as a tagged binary64 (x87_tagged.h). */
++        x87_untag_bytes(seen.st[phys]);
+         if (memcmp(seen.st[phys], ref + 28 + 10 * k, 10) != 0) {
+             printf("FAIL  sync fault %s %s: st(%d) differs\n", c->name, how, k);
+             dump80("got     ", seen.st[phys]);
+diff --git a/tests/x87_tagged.h b/tests/x87_tagged.h
+new file mode 100644
+index 0000000..beb942a
+--- /dev/null
++++ b/tests/x87_tagged.h
+@@ -0,0 +1,72 @@
++/*
++ * x87_tagged.h: the tagged binary64 of x87sidecar's X87_TAGGED_SLOTS.
++ *
++ * With X87_TAGGED_SLOTS (default on with X87_NATIVE_SLOTS), a register the
++ * sidecar holds in binary64 is left in its 80-bit slot as bytes 0-7 = the
++ * binary64 bits with the sign cleared, bytes 8-9 = sign << 15 | 0x7FFF: a
++ * pseudo-infinity or pseudo-NaN, which the x87 never produces.  Everything
++ * that moves the slot as bytes (fxch, the signal context, fxsave, the thread
++ * state) keeps it, and everything that reads it as a value decodes it.  Code
++ * that inspects saved x87 registers as data, as the tests including this
++ * header do, sees the tagged form; x87_untag gives the 80-bit value it
++ * stands for.  An 80-bit load from guest memory of a value in the tagged
++ * range gives the indefinite (x87_tagged_range).
++ */
++#ifndef X87_TAGGED_H
++#define X87_TAGGED_H
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++static inline int x87_tagged_range(uint64_t mant, uint16_t se) {
++    return (se & 0x7FFF) == 0x7FFF && (mant >> 63) == 0;
++}
++
++/* Whether the sidecar under test may tag slots: X87_TAGGED_SLOTS and
++ * X87_NATIVE_SLOTS, both default on, neither set to 0.  Natively nothing is
++ * tagged, and the values the tests use there never fall in the range. */
++static inline int x87_tags_possible(void) {
++    const char* t = getenv("X87_TAGGED_SLOTS");
++    const char* n = getenv("X87_NATIVE_SLOTS");
++    return !(t != NULL && strcmp(t, "0") == 0) && !(n != NULL && strcmp(n, "0") == 0);
++}
++
++/* The 80-bit value a tagged binary64 stands for; anything else unchanged. */
++static inline void x87_untag(uint64_t* mant, uint16_t* se) {
++    if (!x87_tagged_range(*mant, *se)) {
++        return;
++    }
++    const uint64_t b = *mant | ((uint64_t)(*se >> 15) << 63);
++    const uint16_t sign = (uint16_t)((b >> 48) & 0x8000);
++    const unsigned e = (unsigned)(b >> 52) & 0x7FF;
++    const uint64_t f = (b << 12) >> 1; /* fraction at bits 62..11 */
++    if (e == 0) {
++        if (f == 0) {
++            *mant = 0;
++            *se = sign;
++        } else {
++            const int lz = __builtin_clzll(f);
++            *mant = f << lz;
++            *se = (uint16_t)(sign | (15361 - lz));
++        }
++    } else if (e == 0x7FF) {
++        *mant = f | (UINT64_C(1) << 63);
++        *se = (uint16_t)(sign | 0x7FFF);
++    } else {
++        *mant = f | (UINT64_C(1) << 63);
++        *se = (uint16_t)(sign | (e + 15360));
++    }
++}
++
++static inline void x87_untag_bytes(uint8_t* p) {
++    uint64_t mant;
++    uint16_t se;
++    memcpy(&mant, p, 8);
++    memcpy(&se, p + 8, 2);
++    x87_untag(&mant, &se);
++    memcpy(p, &mant, 8);
++    memcpy(p + 8, &se, 2);
++}
++
++#endif
+diff --git a/tools/x87_trace_analyze.py b/tools/x87_trace_analyze.py
+index 92b1053..8a5d8a0 100644
+--- a/tools/x87_trace_analyze.py
++++ b/tools/x87_trace_analyze.py
+@@ -15,6 +15,10 @@ RECORD_BYTES = 256
+ def f80(mantissa, sign_exp):
+     exponent = sign_exp & 0x7fff
+     sign = -1 if sign_exp & 0x8000 else 1
++    if exponent == 0x7fff and not mantissa >> 63:
++        # X87_TAGGED_SLOTS: a tagged binary64, the bits with the sign at bit
++        # 15 of the exponent word (TranslatorX87F80.hpp).
++        return struct.unpack('<d', struct.pack('<Q', mantissa | (sign_exp >> 15) << 63))[0]
+     if exponent == 0x7fff:
+         return sign * math.inf if mantissa == 0x8000000000000000 else math.nan
+     try:

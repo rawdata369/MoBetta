@@ -1,7 +1,8 @@
 #!/bin/bash
 # MoBetta - Build x87sidecar (athei/x87sidecar, MIT) at the pinned commit
 # Applies patches/x87sidecar/*.patch in order (0001 bridges x87 runs across flag-dead shifts,
-# 0002 across push/pop and mov [m],imm, 0003 in blocks with all-zero flag liveness).
+# 0002 across push/pop and mov [m],imm, 0003 in blocks with all-zero flag liveness,
+# 0004 keeps binary64 x87 slots in a tagged form across replies).
 #
 # patches/0003 starts i386 processes under it from wine/bin/x87sidecar.
 # Output: build/out/x87sidecar (arm64, ad-hoc signed), checked against the pinned SHA-256.
@@ -17,7 +18,7 @@ ROOT="$PWD"
 
 SIDECAR_URL="https://github.com/athei/x87sidecar.git"
 SIDECAR_COMMIT="499e0f7e60d2961d379df459dd96bc79ecfe59fd"
-SIDECAR_SHA256="5cc06bbf839e441bc7341dde528957ec4482fd4511f381311879a1be0c9174ca"
+SIDECAR_SHA256="01e2aa9c9717c33f17882f51c9519c3ec749b778847268f04863e0a2e4d807f5"
 
 SRC="$ROOT/build/x87sidecar"
 BUILD="$SRC/build"
@@ -36,6 +37,7 @@ if [ "$(git -C "$SRC" rev-parse HEAD)" != "$SIDECAR_COMMIT" ]; then
     git -C "$SRC" checkout -q --detach "$SIDECAR_COMMIT"
 fi
 git -C "$SRC" checkout -q -- .
+git -C "$SRC" clean -fdq -e build/   # files added by the patches on the last build
 if [ -n "$(git -C "$SRC" status --porcelain --untracked-files=no)" ]; then
     echo "Staged changes in $SRC; refusing to build"
     git -C "$SRC" status --short
