@@ -2,6 +2,15 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-19 - Where Rosetta loses time in Dalaran
+
+### Tested
+- **A finer profile of the main thread.** A debug build of x87sidecar recorded which ARM instruction the game's main thread was running, 10,000 times a second for two minutes at the Dalaran fountain, without pausing the game. It also saved the translated code those samples landed in, so every sample maps back to the x86 instruction it came from. No engine change
+- **Rosetta translates WoW's ordinary code well.** Common instructions (`mov`, `cmp`, `add`, conditional jumps, `push`) come out at about 1.3-2.4 ARM instructions each, close to the minimum for 32-bit code on a 64-bit CPU. A replacement translator for that code would gain little, so MoBetta will not build one
+- **The x87 code costs much more than the earlier entry said.** About 71% of the main thread's time in `Wow.exe` is inside x87 sequences, not 27%. The earlier figure counted the wrong thing: Rosetta reports the x86 position only at the start and end of each sequence. The math itself is cheap. Most of the time goes to moving values between Rosetta's 80-bit x87 registers in memory and the CPU's 64-bit floating-point registers whenever a sequence starts or ends. WoW's sequences are short (about 7 instructions), because ordinary instructions in between (such as `push` or storing a constant) break them up
+- **A faster conversion does not help.** Two faster versions of the 80-bit to 64-bit conversion produced identical results on 200 million test values but ran no faster on a copy of WoW's view-culling loop. The time is spent waiting on the round trip through memory, not in the conversion itself
+- **What does help is joining the sequences.** x87sidecar can already join sequences across a few kinds of ordinary instructions. Teaching it `push`, `pop` and storing a constant would let the hottest function in Dalaran run as one sequence instead of 13 separate ones. The profile puts the most this could save at about a tenth of the main thread. Only an in-game before-and-after FPS test will show the real number. That is the next step
+
 ## 2026-11-18 - Dalaran x87 profile
 
 ### Tested
