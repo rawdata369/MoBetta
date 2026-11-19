@@ -53,7 +53,7 @@ In game with the v1.0.0 engine on a MacBook M3, windowed, medium-high graphics s
 | Booty Bay, rain | 97 |
 | Shattrath City | 86 |
 
-On v1.0.4 (windowed 1563x1010): Booty Bay 70-80, Dalaran 30-40. Dalaran is limited by the game's own main thread under Rosetta 2, not by Wine, mtld3d or the GPU (see [CHANGELOG.md](CHANGELOG.md), 2026-11-18).
+On v1.0.4 (windowed 1563x1010): Booty Bay 70-80, Dalaran 30-40. Dalaran is limited by the game's own main thread under Rosetta 2, not by Wine, mtld3d or the GPU. About a quarter of that thread is x87 math (worth roughly 1.5-3 FPS at most); the rest is ordinary code translated by Rosetta, which is where the next work looks (see [CHANGELOG.md](CHANGELOG.md), 2026-11-18).
 
 <table>
   <tr>

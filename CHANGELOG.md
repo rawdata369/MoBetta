@@ -2,6 +2,12 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-18 - Dalaran x87 profile
+
+### Tested
+- **How much the x87 code costs in Dalaran.** A second Dalaran run on v1.0.4 (maximized window, 1970x1273, ~40 FPS at the fountain) recorded x87sidecar's own counts for every translated block. 86% of the x87 instructions already take the sidecar's fast path, at about 23 ARM instructions each. The costliest spots are short x87 runs broken up by ordinary instructions, which fall back to translating one instruction at a time: one function alone (`0x7f9480`) is 11% of all x87 cost at about 79 ARM instructions per x87 instruction. Joining those runs more widely would save at most 13-26% of the x87 cost, which is only about 3.5-7% of the main thread, or roughly 1.5-3 FPS at 40. That is less than the earlier entry suggested, so x87 alone will not close the gap
+- **No hidden system-call cost.** The earlier profile put 10% of the main thread in the macOS kernel. A call-stack sample of the game puts it at 2-5%, with 94-98% in WoW's own code as translated by Rosetta 2; the rest was an artifact of the profiler. Wine has nothing to give back on that thread. The rest of the thread's time, about three quarters of it, is ordinary integer code that Rosetta translates; the next step is to measure how well it does that on the hottest functions. No engine change
+
 ## 2026-11-18 - Dalaran profiled; shader cache measured
 
 ### Tested
