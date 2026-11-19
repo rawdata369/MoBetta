@@ -1,0 +1,132 @@
+MoBetta: mtld3d: Keep the shader cache in %LOCALAPPDATA%\mtld3d-cache and turn it on for WoW.
+
+athei/mtld3d v0.15.1 (9919759) keeps its shader and pipeline cache,
+mtld3d_shaders.bin, beside the executable. Beside Wow.exe is the game
+folder (MoBetta constraint 1), so patch 0002 turned the cache off in the
+wow profile, and every launch compiled each shader and pipeline on first
+use: up to 313 ms sync batches on arrival in Booty Bay and Dalaran
+(MoBetta Session #27).
+
+The cache now lives in the prefix, under
+%LOCALAPPDATA%\mtld3d-cache\<exe stem>\mtld3d_shaders.bin (its .lock
+sidecar beside it); the directory is created before the path is mapped,
+since a directory that does not exist yet may have no unix path. Without
+LOCALAPPDATA there is no cache rather than one in the executable's
+directory. With that, the wow profile no longer turns the cache off;
+mtld3d.conf and MTLD3D_CONFIG can still set shaderCache.enable=false.
+
+diff --git a/mtld3d.conf b/mtld3d.conf
+index 6c8ff0e..659a524 100644
+--- a/mtld3d.conf
++++ b/mtld3d.conf
+@@ -167,8 +167,9 @@
+ # Shader cache  #
+ ##################
+ 
+-# Use the persistent shader and pipeline cache (`mtld3d_shaders.bin` next to
+-# the game's .exe).
++# Use the persistent shader and pipeline cache (`mtld3d_shaders.bin` in
++# `%LOCALAPPDATA%\mtld3d-cache\<exe name>\` in the Wine prefix; MoBetta,
++# upstream keeps it next to the game's .exe).
+ #
+ # When `true` (the default), mtld3d recreates recorded shader libraries and
+ # render pipelines before processing the first frame. Startup takes longer,
+diff --git a/windows/core/src/app_profile.rs b/windows/core/src/app_profile.rs
+index 6e29cd7..3881c6c 100644
+--- a/windows/core/src/app_profile.rs
++++ b/windows/core/src/app_profile.rs
+@@ -90,8 +90,8 @@ static PROFILES: &[AppProfile] = &[
+     // MoBetta: HDR is off. The clients have no HDR content, and the EDR
+     // layer's headroom ramp keeps Wine's explorer refreshing its display
+     // devices for ~45 s, during which the game's first frame waits (black
+-    // title screen) and a maximize stalls. The shader cache is off because
+-    // it writes next to the executable, inside the game folder.
++    // title screen) and a maximize stalls. The shader cache stays on: it
++    // lives under %LOCALAPPDATA% in the prefix, not beside the executable.
+     AppProfile {
+         name: "wow",
+         exe: "WoW.exe",
+@@ -99,7 +99,7 @@ static PROFILES: &[AppProfile] = &[
+         product: Some("World of Warcraft"),
+         original_filename: None,
+         settings: "query.flushImmediate=true;query.eventImmediate=true;display.maxResolutions=32;\
+-                   color.hdr.enable=false;shaderCache.enable=false",
++                   color.hdr.enable=false",
+     },
+ ];
+ 
+diff --git a/windows/core/src/app_profile/tests.rs b/windows/core/src/app_profile/tests.rs
+index 13014ac..691da02 100644
+--- a/windows/core/src/app_profile/tests.rs
++++ b/windows/core/src/app_profile/tests.rs
+@@ -72,11 +72,11 @@ fn the_wow_profile_matches_both_clients_and_keeps_the_immediate_answers() {
+         assert!(profiled.query_event_immediate);
+         // The resolution dropdown holds 32 buttons, one per size.
+         assert_eq!(profiled.max_resolutions, 32);
+-        // MoBetta: HDR and the in-game-folder shader cache off, and a user
+-        // can still take either back.
++        // MoBetta: HDR off, and a user can still take it back. The shader
++        // cache stays on (it lives under %LOCALAPPDATA%, not the game folder).
+         assert!(stock.hdr_enable && stock.shader_cache_enable);
+         assert!(!profiled.hdr_enable);
+-        assert!(!profiled.shader_cache_enable);
++        assert!(profiled.shader_cache_enable);
+         assert!(parse(Some(profile), "", Some("color.hdr.enable=true")).hdr_enable);
+     }
+     let nameless = AppIdentity::new("WoW.exe".to_owned(), None);
+diff --git a/windows/d3d9/src/encoder.rs b/windows/d3d9/src/encoder.rs
+index 7f85371..d22f894 100644
+--- a/windows/d3d9/src/encoder.rs
++++ b/windows/d3d9/src/encoder.rs
+@@ -128,10 +128,7 @@ impl EncoderThread {
+         gpu_caps: GpuCaps,
+         config: &Mtld3dConfig,
+     ) -> Result<Self, i32> {
+-        let cache_path = std::env::current_exe()
+-            .ok()
+-            .and_then(|exe| exe.parent().map(|parent| parent.join("mtld3d_shaders.bin")))
+-            .and_then(|path| crate::wine_path::unix_path(&path));
++        let cache_path = if config.shader_cache_enable { shader_cache_location() } else { None };
+         if config.shader_cache_enable && cache_path.is_none() {
+             mtld3d_shared::log_once_warn!(target: LOG_TARGET, "encoder: cannot translate game shader cache path");
+         }
+@@ -526,3 +523,26 @@ impl RetirementHooks for RetirementCalls<'_> {
+         }
+     }
+ }
++
++/// MoBetta: directory under `%LOCALAPPDATA%` that holds the shader caches.
++const SHADER_CACHE_DIR: &str = "mtld3d-cache";
++
++/// MoBetta: the unix path of this executable's `mtld3d_shaders.bin`, or `None`.
++///
++/// Upstream keeps the cache beside the executable, which is the game's
++/// folder, and nothing of the engine may write there. It goes to
++/// `%LOCALAPPDATA%\mtld3d-cache\<exe stem>\` in the prefix instead, one
++/// directory per executable name, created here: a directory that does not
++/// exist yet may have no unix path. Without `%LOCALAPPDATA%` there is no
++/// cache; falling back to the executable's directory would write into the
++/// game's folder.
++fn shader_cache_location() -> Option<String> {
++    let exe = std::env::current_exe().ok()?;
++    let stem = exe.file_stem().map_or_else(
++        || String::from("mtld3d"),
++        |s| s.to_string_lossy().into_owned(),
++    );
++    let dir = crate::log_sink::local_app_data()?.join(SHADER_CACHE_DIR).join(stem);
++    std::fs::create_dir_all(&dir).ok()?;
++    crate::wine_path::unix_path(&dir.join("mtld3d_shaders.bin"))
++}
+diff --git a/windows/d3d9/src/log_sink.rs b/windows/d3d9/src/log_sink.rs
+index 531ba4f..6287fb5 100644
+--- a/windows/d3d9/src/log_sink.rs
++++ b/windows/d3d9/src/log_sink.rs
+@@ -175,7 +175,7 @@ pub fn early_location() -> Option<(String, String)> {
+ /// Wine sets it for every process from the prefix's user profile. Without
+ /// it there is no default location and the log goes to stderr: falling back
+ /// to the executable's directory would write into the game's folder.
+-fn local_app_data() -> Option<PathBuf> {
++pub(crate) fn local_app_data() -> Option<PathBuf> {
+     std::env::var_os("LOCALAPPDATA")
+         .filter(|dir| !dir.is_empty())
+         .map(PathBuf::from)
