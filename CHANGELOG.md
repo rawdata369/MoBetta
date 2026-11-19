@@ -2,6 +2,17 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-18 - HDR retest; false-positive reports sent
+
+### Tested
+- **HDR on no longer stalls the game.** Before v1.0.4, turning on HDR in mtld3d gave a black title screen for up to 45 s and a ~20 s freeze on maximize, which is why MoBetta ships with HDR off. The cause was the same one behind the fullscreen stutter fixed in v1.0.4 (`patches/0007`): Wine reloaded its display list every time macOS adjusted the display's brightness headroom. Retested on v1.0.4 with HDR on and auto-brightness on: the title screen came up right away, maximize, minimize and fullscreen worked normally, and Wine's desktop process stayed near idle (0.4% CPU on average) while the headroom rose to 5.4x. No engine change
+
+### Unchanged
+- **HDR stays off by default.** WoW 3.3.5a has no HDR content, so colours look the same either way, and the standard 8-bit output uses half the graphics bandwidth. Anyone who wants it on can set `color.hdr.enable=true` in `MTLD3D_CONFIG` or `mtld3d.conf`, without the old stall
+
+### Security
+- **False-positive reports sent** to Microsoft, Cynet and K7 for the one-engine VirusTotal flags in [`docs/SECURITY_SCANS.md`](docs/SECURITY_SCANS.md). Each flag is a machine-learning or generic verdict. Three different patched files are flagged by Microsoft alone, and they share no technique, so the model most likely reacts to a modified low-level system library rather than to any particular change. Results will be posted on that page when the vendors answer
+
 ## 2026-11-18 - Malware scan results
 
 ### Added

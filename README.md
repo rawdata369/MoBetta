@@ -21,7 +21,7 @@ MoBetta is a Wineskin engine. Everything happens inside Wine:
 - **The frame rate:** game processes start under [x87sidecar](https://github.com/athei/x87sidecar), which makes Rosetta translate the game's x87 floating point to native ARM code instead of a slow software path. **20 FPS -> 80 FPS average** (106 max)
 - **Graphics buffers:** Wine's OpenGL keeps the low-memory view of a graphics buffer between maps instead of rebuilding it every time. Up to ~20% more FPS, 127 max
 - **DEP** stays on under Rosetta, as on Windows
-- **Direct3D 9 on Metal:** our build of [mtld3d](https://github.com/athei/mtld3d), without the hooks its release puts into the game's memory, with HDR off and its logs kept out of the game folder. ~140 FPS at the inn (was 60-80), ~170 in a light view
+- **Direct3D 9 on Metal:** our build of [mtld3d](https://github.com/athei/mtld3d), without the hooks its release puts into the game's memory, with HDR off (WoW 3.3.5a has no HDR content; turning it on works without stalls since v1.0.4) and its logs kept out of the game folder. ~140 FPS at the inn (was 60-80), ~170 in a light view
 
 **Key constraint:** No game file modifications, nothing injected into the game process. This engine is designed for use with servers that run anti-cheat systems. A SHA-256 baseline of the game folder is checked before and after every test.
 
@@ -91,7 +91,7 @@ Chat and character names are blurred in the screenshots.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
-Malware scans of the v1.0.4 release, the changed engine files and the source (ClamAV, VirusTotal, with screenshots): [docs/SECURITY_SCANS.md](docs/SECURITY_SCANS.md).
+Malware scans of the v1.0.4 release, the changed engine files and the source (ClamAV, VirusTotal, with screenshots): [docs/SECURITY_SCANS.md](docs/SECURITY_SCANS.md). False-positive reports for the one-engine flags were sent to the vendors on 2026-11-18.
 
 ## Requirements
 
