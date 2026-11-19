@@ -1,0 +1,388 @@
+MoBetta: x87sidecar: Bridge x87 runs in blocks with all-zero flag liveness.
+
+v2 bridging (flag-dead ALU in a gap) refused any block whose flag_liveness
+bytes are all zero, in case the Rosetta build never fills the field. WoW
+3.3.5a's segment-vs-box test (0x7f9480, the hottest x87 block at the
+Dalaran fountain, 9.1% of exec-weighted x87 emit) is such a block: it
+falls through into a loop header whose first flag op is `test`, so every
+flag it writes is dead and every byte is 0. Its six `sub r32,r32` gaps
+split it, and only 4 of its 13 x87 ops were joined.
+
+Measured on Rosetta (macOS 27.2), x86_64 and i386 under Wine: the byte is
+exact across a direct fall-through successor. A jc, sbb, mov;jz, a whole
+x87 block then jc, or inc;jc there gives the sub 0x20/0x40; test or
+mov;test gives 0 (an all-zero block). Exits the analysis cannot follow are
+seeded 0xfe: indirect jmp, call, ret, a block cut at its length limit
+(2036 instructions), and a fall-through across a page boundary. So
+all-zero means every written flag is dead.
+
+The guard now trusts an all-zero block once any block of the process has
+had a nonzero byte (a per-process latch, x87bridge::flag_liveness_trusted);
+blocks before the first one keep the per-block rule. The trust model is
+the one v2 already used: a zero on the last writer before a fall-through
+in a block with some nonzero byte also rested on the cross-block analysis.
+X87_BRIDGE_ZERO_FL=0 restores the per-block rule. profile_analyze follows
+it in its production config and fragmentation section (MB_ZERO_FL=0).
+
+Tests: tests/test_bridge_fallthrough.c (in the suite and the
+allocation-failure phase): ten live cases with a setter that leaves the
+flag opposite to the sub's result before the region, so a bridged sub
+gives a wrong value, and four dead cases that must join (X87_LOG_BRIDGE).
+With flags_dead() forced true, all ten live cases fail; with the patch all
+pass and the four dead cases join. Suite 1468 passed, 0 failed, 2 known
+stock divergences. MoBetta tests/x87_bridge_stack.c under Wine:
+bit-identical to stock, segbox loop ~512 -> ~339 ms (X87_BRIDGE_ZERO_FL=0:
+~511). Session #28 Dalaran profile: 21.55 -> 20.05 ARM per x87 op,
+0x7f9480 75.1G -> 24.1G exec-weighted ARM. In game at the Dalaran
+fountain: 40-55 FPS with spikes into the 60s, vs 45-50 on 0002.
+
+diff --git a/rosetta_core/include/rosetta_core/Config.h b/rosetta_core/include/rosetta_core/Config.h
+index 3be6882..7819e5e 100644
+--- a/rosetta_core/include/rosetta_core/Config.h
++++ b/rosetta_core/include/rosetta_core/Config.h
+@@ -135,6 +135,13 @@ struct RosettaConfig {
+                                       //                           gap.
+     uint8_t bridge_max_total;         // X87_BRIDGE_MAX_TOTAL      [1,16], default 16: max bridge
+                                       //                           instrs per region.
++    uint8_t bridge_zero_fl;           // X87_BRIDGE_ZERO_FL        (default ON, MoBetta 0003)
++                                      //                           v2 also bridges in a block
++                                      //                           whose flag_liveness bytes are
++                                      //                           all zero, once any block of
++                                      //                           this process had a nonzero
++                                      //                           byte (X87Bridge.h).  Set =0
++                                      //                           for the per-block rule.
+     uint8_t log_bridge;               // X87_LOG_BRIDGE            one stderr line per bridged
+                                       //                           compile (hash, counts) and per
+                                       //                           fallback.
+diff --git a/rosetta_core/include/rosetta_core/X87Bridge.h b/rosetta_core/include/rosetta_core/X87Bridge.h
+index 681fec9..fd78339 100644
+--- a/rosetta_core/include/rosetta_core/X87Bridge.h
++++ b/rosetta_core/include/rosetta_core/X87Bridge.h
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <atomic>
++
+ #include "rosetta_core/IRInstr.h"
+ #include "rosetta_core/IROperand.h"
+ #include "rosetta_core/Opcode.h"
+@@ -243,8 +245,33 @@ inline bool block_has_flag_liveness(const IRInstr* instr_array, int64_t num_inst
+     return false;
+ }
+ 
++// MoBetta 0003: a block with flag writers and no nonzero byte is still
++// proven, once the field is known to be populated in this process.
++// Measured on Rosetta (macOS 27.2, x86_64 and i386 under Wine; MoBetta
++// Session #31): the byte is exact across a direct fall-through or jmp
++// successor -- a CF/ZF reader there, or past a whole x87 block or a
++// partial writer, gives 0x20/0x40; a `test` there gives 0 -- and is
++// seeded 0xfe at every exit the analysis cannot follow (indirect jmp,
++// call, ret, a block cut at its length limit, a fall-through across a
++// page boundary).  So all-zero means "every written flag is dead" (WoW
++// 0x7f9480: falls into a loop header that starts `mov; ...; test`).  The
++// one failure the per-block guard covered -- a Rosetta that never fills
++// the field -- is covered by a per-process latch: any nonzero byte seen
++// in any block of this process sets it.  Blocks before the first one
++// keep the per-block rule.
++inline std::atomic<bool> g_flag_liveness_seen{false};
++
++inline bool flag_liveness_trusted(const IRInstr* instr_array, int64_t num_instrs,
++                                  bool trust_zero_blocks) {
++    if (block_has_flag_liveness(instr_array, num_instrs)) {
++        g_flag_liveness_seen.store(true, std::memory_order_relaxed);
++        return true;
++    }
++    return trust_zero_blocks && g_flag_liveness_seen.load(std::memory_order_relaxed);
++}
++
+ // Full v2 eligibility for one instruction (caller must separately check
+-// block_has_flag_liveness once per block): v1 shapes need no proof; v2-only
++// flag_liveness_trusted once per block): v1 shapes need no proof; v2-only
+ // shapes need their written flags dead.
+ inline bool is_bridge_v2_proven(const IRInstr& ins) {
+     if (is_bridge_v1(ins)) {
+diff --git a/rosetta_core/include/rosetta_core/X87Cache.h b/rosetta_core/include/rosetta_core/X87Cache.h
+index 0182ae7..ef68dd4 100644
+--- a/rosetta_core/include/rosetta_core/X87Cache.h
++++ b/rosetta_core/include/rosetta_core/X87Cache.h
+@@ -223,15 +223,17 @@ struct X87Cache {
+     // bridges are trimmed — they join nothing), contains at least one join,
+     // and satisfies x87_count >= 3 so the merged run clears the IR gate.
+     // allow_v2: gap instructions may also be flag-dead ALU (v2), accepted
+-    // only when the block's flag_liveness field is demonstrably populated
+-    // (x87bridge::block_has_flag_liveness).
++    // only when the flag_liveness field is demonstrably populated
++    // (x87bridge::flag_liveness_trusted; trust_zero_blocks lets an all-zero
++    // block count once any block of this process had a nonzero byte).
+     struct BridgedRun {
+         int16_t total = 0;
+         int16_t x87_count = 0;
+         int16_t bridges = 0;
+     };
+     static BridgedRun lookahead_bridged(IRInstr* instr_array, int64_t num_instrs, int64_t insn_idx,
+-                                        int max_gap, int max_total_bridges, bool allow_v2 = false);
++                                        int max_gap, int max_total_bridges, bool allow_v2 = false,
++                                        bool trust_zero_blocks = false);
+ 
+     // What one instruction does to the register stack, for the
+     // X87_NATIVE_SLOTS slot tracker.  Depths are logical (before the
+diff --git a/rosetta_core/src/ConfigEnv.cpp b/rosetta_core/src/ConfigEnv.cpp
+index 813aa71..c28b65d 100644
+--- a/rosetta_core/src/ConfigEnv.cpp
++++ b/rosetta_core/src/ConfigEnv.cpp
+@@ -222,6 +222,10 @@ RosettaConfig load_config_from_env() {
+     // at 2 / 8 the new shapes join almost nothing there.
+     cfg.bridge_max_gap = 4;
+     cfg.bridge_max_total = 16;
++    // MoBetta 0003: all-zero flag_liveness blocks are proven too once the
++    // field is known populated in this process (X87Bridge.h,
++    // flag_liveness_trusted).  Set =0 for the per-block rule.
++    cfg.bridge_zero_fl = env_default_on("X87_BRIDGE_ZERO_FL");
+     cfg.log_bridge = env_truthy("X87_LOG_BRIDGE") ? 1 : 0;
+     auto parse_bridge_bound = [](const char* env_name, uint8_t& target, long lo, long hi) {
+         const char* t = std::getenv(env_name);
+@@ -572,6 +576,10 @@ void print_env_help(std::FILE* out) {
+         "                                flags Rosetta's own flag_liveness byte\n"
+         "                                proves dead; lowered to non-flag-setting\n"
+         "                                ARM.  Requires X87_ENABLE_BRIDGE.\n"
++        "  X87_BRIDGE_ZERO_FL=0          v2 only in blocks with a nonzero flag-\n"
++        "                                liveness byte (default ON: an all-zero\n"
++        "                                block counts once any block of the\n"
++        "                                process had one)\n"
+         "  X87_BRIDGE_MAX_GAP=N          [1,4] default 4: max consecutive bridge\n"
+         "                                instructions per gap\n"
+         "  X87_BRIDGE_MAX_TOTAL=N        [1,16] default 16: max bridge instructions\n"
+diff --git a/rosetta_core/src/Translator.cpp b/rosetta_core/src/Translator.cpp
+index 92f12fb..97f2248 100644
+--- a/rosetta_core/src/Translator.cpp
++++ b/rosetta_core/src/Translator.cpp
+@@ -919,7 +919,8 @@ static auto translate_instruction_impl(TranslationResult* translation_result, IR
+                     const auto br = X87Cache::lookahead_bridged(
+                         instr_array, num_instrs, insn_idx, g_rosetta_config->bridge_max_gap,
+                         g_rosetta_config->bridge_max_total,
+-                        g_rosetta_config->enable_bridge_v2 != 0);
++                        g_rosetta_config->enable_bridge_v2 != 0,
++                        g_rosetta_config->bridge_zero_fl != 0);
+                     if (br.total > run) {
+                         cache.bridge_pending_total = br.total;
+                         cache.bridge_pending_x87 = br.x87_count;
+diff --git a/rosetta_core/src/X87Cache.cpp b/rosetta_core/src/X87Cache.cpp
+index c0576a4..c42f718 100644
+--- a/rosetta_core/src/X87Cache.cpp
++++ b/rosetta_core/src/X87Cache.cpp
+@@ -454,12 +454,16 @@ bool X87Cache::is_native_transport_run(IRInstr* instr_array, int64_t num_instrs,
+ 
+ X87Cache::BridgedRun X87Cache::lookahead_bridged(IRInstr* instr_array, int64_t num_instrs,
+                                                  int64_t insn_idx, int max_gap,
+-                                                 int max_total_bridges, bool allow_v2) {
+-    // v2 (flag-dead ALU) gaps are only trusted when the block demonstrably
+-    // carries Rosetta's flag-liveness analysis — an unpopulated (all-zero)
+-    // field would otherwise read as "every flag dead".  One scan of the
+-    // whole block decides this for all gap instructions below.
+-    const bool v2 = allow_v2 && x87bridge::block_has_flag_liveness(instr_array, num_instrs);
++                                                 int max_total_bridges, bool allow_v2,
++                                                 bool trust_zero_blocks) {
++    // v2 (flag-dead ALU) gaps are only trusted when Rosetta's flag-liveness
++    // field is demonstrably populated — an unpopulated (all-zero) field
++    // would otherwise read as "every flag dead".  Populated means a nonzero
++    // byte in this block or, with trust_zero_blocks, in any block of this
++    // process (x87bridge::flag_liveness_trusted).  One scan of the whole
++    // block decides this for all gap instructions below.
++    const bool v2 = allow_v2 && x87bridge::flag_liveness_trusted(instr_array, num_instrs,
++                                                                 trust_zero_blocks);
+ 
+     // Walk forward from insn_idx (an x87 instruction by contract): x87 ops
+     // extend the region; a bridge instruction extends it tentatively as
+diff --git a/scripts/run_tests.sh b/scripts/run_tests.sh
+index 07e634f..947d6ac 100755
+--- a/scripts/run_tests.sh
++++ b/scripts/run_tests.sh
+@@ -169,6 +169,7 @@ ALL_TESTS=(
+     test_bridge_alu
+     test_bridge_ext
+     test_bridge_stack
++    test_bridge_fallthrough
+     test_fld_arith_arithp_fma
+     test_readst_elide
+     test_fxch
+@@ -868,6 +869,7 @@ ALLOC_FAIL_TESTS=(
+     test_ir_split
+     test_bridge_alu
+     test_bridge_stack
++    test_bridge_fallthrough
+     test_fistp_multi
+     test_fist_pressure
+     test_fsincos
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 9ec3434..42f2a0e 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -102,6 +102,7 @@ add_x86_sample(test_bridge_flags)
+ add_x86_sample(test_bridge_alu)
+ add_x86_sample(test_bridge_ext)
+ add_x86_sample(test_bridge_stack)
++add_x86_sample(test_bridge_fallthrough)
+ add_x86_sample(test_decoder_fcomp_st)
+ add_x86_sample_lowzero(test_decoder_arpl)
+ add_x86_sample(test_x87_signal_storm)
+diff --git a/tests/test_bridge_fallthrough.c b/tests/test_bridge_fallthrough.c
+new file mode 100644
+index 0000000..c3d82bc
+--- /dev/null
++++ b/tests/test_bridge_fallthrough.c
+@@ -0,0 +1,125 @@
++/*
++ * test_bridge_fallthrough.c — Run bridging v2 across a block whose
++ * flag_liveness bytes are all zero (MoBetta 0003).
++ *
++ * Every case is an x87 region with a `sub` in its gap that ends by falling
++ * through into a loop header (a branch target, so Rosetta starts a new
++ * block there) — Wow.exe 3.3.5a 0x7f9480's shape.  Whether the sub's flags
++ * are live is decided entirely by the successor block, so these cases test
++ * that Rosetta's liveness byte follows a fall-through exit:
++ *
++ *   live  — the successor reads the sub's CF/ZF (jc, sbb, mov;jz, a whole
++ *           x87 block then jc, inc;jc).  The sub must NOT be bridged: a
++ *           setter before the region leaves the flag in the opposite state,
++ *           so a bridged (non-flag-setting) sub gives a wrong result.
++ *   dead  — the successor's first flag op is a full writer (test, mov;test).
++ *           The block is all-zero; with X87_BRIDGE_ZERO_FL (default on) the
++ *           region is v2-bridged (X87_LOG_BRIDGE), and values stay exact.
++ *
++ * The 0xfe seeding at exits the analysis cannot follow (indirect jmp,
++ * call, ret, length cut, page boundary) was measured with standalone
++ * probes (MoBetta Session #31, rdsync/captures/s31/).
++ *
++ * Build: clang -arch x86_64 -O0 -o test_bridge_fallthrough test_bridge_fallthrough.c
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++static int failures = 0;
++
++static void check_u32(const char* name, uint32_t got, uint32_t expected) {
++    if (got != expected) {
++        printf("FAIL  %-55s  got=0x%08x  expected=0x%08x\n", name, got, expected);
++        failures++;
++    } else {
++        printf("PASS  %s\n", name);
++    }
++}
++
++static void check(const char* name, double got, double expected) {
++    uint64_t g, e;
++    memcpy(&g, &got, 8);
++    memcpy(&e, &expected, 8);
++    if (g != e) {
++        printf("FAIL  %-55s  got=%.17g  expected=%.17g\n", name, got, expected);
++        failures++;
++    } else {
++        printf("PASS  %s\n", name);
++    }
++}
++
++static const double bx[4] = {2.0, 3.0, 5.0, 7.0};
++static double out;
++
++/* pre: leaves the flag the successor reads opposite to the sub's result.
++ * Region: fld/fmul | sub | fld/fmul/faddp/fstp (x87 on both sides of the
++ * gap so the bridge has something to join).  Label 1 is the successor;
++ * the never-taken back-edge makes it a block start. */
++#define CASE(name, pre, succ)                                                \
++    static uint32_t name(uint32_t a, uint32_t b) {                           \
++        uint32_t c = 0, n = 1;                                               \
++        __asm__ volatile(pre "\n\t"                                          \
++                         "fldl (%[p])\n\tfmull 8(%[p])\n\t"                  \
++                         "subl %[b], %[a]\n\t"                               \
++                         "fldl 16(%[p])\n\tfmull 24(%[p])\n\t"               \
++                         "faddp\n\tfstpl %[o]\n\t"                           \
++                         "1:\n\t" succ "\n\t"                                \
++                         "2:\n\tdecl %[n]\n\tjnz 1b\n\t"                     \
++                         : [a] "+&r"(a), [c] "+&r"(c), [n] "+&r"(n),          \
++                           [o] "=m"(out)                                     \
++                         : [b] "r"(b), [p] "r"(bx)                           \
++                         : "cc", "memory");                                  \
++        return a ^ c;                                                        \
++    }
++
++#define CF0 "clc"
++#define CF1 "stc"
++#define ZF0 "orl %[b], %[b]" /* b != 0 in every ZF case */
++#define ZF1 "cmpl %[b], %[b]"
++
++/* live: successor reads the sub's flags */
++CASE(l1_jc_borrow, CF0, "jc 2f\n\tincl %[c]")
++CASE(l1_jc_noborrow, CF1, "jc 2f\n\tincl %[c]")
++CASE(l2_sbb_borrow, CF0, "sbbl %[c], %[c]")
++CASE(l2_sbb_noborrow, CF1, "sbbl %[c], %[c]")
++CASE(l3_movjz_zero, ZF0, "movl %[a], %[c]\n\tjz 2f\n\tincl %[c]")
++CASE(l3_movjz_nonzero, ZF1, "movl %[a], %[c]\n\tjz 2f\n\tincl %[c]")
++CASE(l4_x87jc_borrow, CF0, "fldl (%[p])\n\tfstpl %[o]\n\tjc 2f\n\tincl %[c]")
++CASE(l4_x87jc_noborrow, CF1, "fldl (%[p])\n\tfstpl %[o]\n\tjc 2f\n\tincl %[c]")
++CASE(l5_incjc_borrow, CF0, "incl %[c]\n\tjc 2f\n\tincl %[c]")
++CASE(l5_incjc_noborrow, CF1, "incl %[c]\n\tjc 2f\n\tincl %[c]")
++/* dead: successor's first flag op writes every flag it later reads */
++CASE(d1_test_nonzero, CF1, "testl %[a], %[a]\n\tjz 2f\n\tincl %[c]")
++CASE(d1_test_zero, ZF0, "testl %[a], %[a]\n\tjz 2f\n\tincl %[c]")
++CASE(d2_movtest_nonzero, ZF1, "movl %[a], %[c]\n\ttestl %[c], %[c]\n\tjnz 2f\n\tincl %[c]")
++CASE(d2_movtest_zero, ZF0, "movl %[a], %[c]\n\ttestl %[c], %[c]\n\tjnz 2f\n\tincl %[c]")
++
++int main(void) {
++    printf("=== test_bridge_fallthrough ===\n");
++    /* a=1,b=2: a=0xffffffff, CF=1, ZF=0.  a=3,b=2: a=1, CF=0, ZF=0.
++     * a=b=2: a=0, CF=0, ZF=1. */
++    for (int rep = 0; rep < 3; rep++) {
++        check_u32("live jc, borrow (CF=1)", l1_jc_borrow(1, 2), 0xffffffffu);
++        check_u32("live jc, no borrow (CF=0)", l1_jc_noborrow(3, 2), 0x00000000u);
++        check_u32("live sbb, borrow", l2_sbb_borrow(1, 2), 0x00000000u);
++        check_u32("live sbb, no borrow", l2_sbb_noborrow(3, 2), 0x00000001u);
++        check_u32("live mov;jz, zero (ZF=1)", l3_movjz_zero(2, 2), 0x00000000u);
++        check_u32("live mov;jz, nonzero (ZF=0)", l3_movjz_nonzero(3, 2), 0x00000003u);
++        check_u32("live x87 block;jc, borrow", l4_x87jc_borrow(1, 2), 0xffffffffu);
++        check_u32("live x87 block;jc, no borrow", l4_x87jc_noborrow(3, 2), 0x00000000u);
++        check_u32("live inc;jc (CF through inc), borrow", l5_incjc_borrow(1, 2), 0xfffffffeu);
++        check_u32("live inc;jc (CF through inc), no borrow", l5_incjc_noborrow(3, 2), 0x00000003u);
++        check_u32("dead test, nonzero", d1_test_nonzero(1, 2), 0xfffffffeu);
++        check_u32("dead test, zero", d1_test_zero(2, 2), 0x00000000u);
++        check_u32("dead mov;test, nonzero", d2_movtest_nonzero(1, 2), 0x00000000u);
++        check_u32("dead mov;test, zero", d2_movtest_zero(2, 2), 0x00000001u);
++        check("x87 result", out, 2.0 * 3.0 + 5.0 * 7.0);
++    }
++    if (failures == 0) {
++        printf("ALL PASS  (0 failures)\n");
++    } else {
++        printf("SOME FAILURES  (%d failures)\n", failures);
++    }
++    return failures == 0 ? 0 : 1;
++}
+diff --git a/tools/profile_analyze.cpp b/tools/profile_analyze.cpp
+index 6024784..ca80b65 100644
+--- a/tools/profile_analyze.cpp
++++ b/tools/profile_analyze.cpp
+@@ -493,6 +493,9 @@ RosettaConfig make_production_cfg() {
+     cfg.enable_bridge_v2 = 1;
+     cfg.bridge_max_gap = 4;
+     cfg.bridge_max_total = 16;
++    // MB_ZERO_FL=0: the per-block flag-liveness rule (before MoBetta 0003).
++    const char* zero_fl = std::getenv("MB_ZERO_FL");
++    cfg.bridge_zero_fl = (zero_fl != nullptr && zero_fl[0] == '0') ? 0 : 1;
+     cfg.native_transport = 1;
+     cfg.native_slots = 1;
+     // Rollback knobs default ON too but only matter to Translator's gate
+@@ -1532,8 +1535,13 @@ int main(int argc, char** argv) try {
+                 // Joining gaps + splice plans (v1, and v2-proven = v1 ∪ v2
+                 // gaps whose every flag writer carries the flag_liveness==0
+                 // proof — the exact condition the v2 runtime bridges on,
+-                // including the field-populated block gate).
+-                const bool has_fl = x87bridge::block_has_flag_liveness(mut_instrs, L);
++                // including the field-populated gate: MB_ZERO_FL=0 sizes the
++                // old per-block rule, default the per-process latch).
++                static const bool zero_fl = [] {
++                    const char* e = std::getenv("MB_ZERO_FL");
++                    return e == nullptr || e[0] != '0';
++                }();
++                const bool has_fl = x87bridge::flag_liveness_trusted(mut_instrs, L, zero_fl);
+                 std::vector<bool> drop(b.instrs.size(), false);
+                 std::vector<bool> drop_v2(b.instrs.size(), false);
+                 // Upper-bound tiers for the demand-model evaluation: "wide" =
