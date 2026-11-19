@@ -1,6 +1,7 @@
 #!/bin/bash
 # MoBetta - Build x87sidecar (athei/x87sidecar, MIT) at the pinned commit
-# Applies patches/x87sidecar/*.patch in order (0001 bridges x87 runs across flag-dead shifts).
+# Applies patches/x87sidecar/*.patch in order (0001 bridges x87 runs across flag-dead shifts,
+# 0002 across push/pop and mov [m],imm).
 #
 # patches/0003 starts i386 processes under it from wine/bin/x87sidecar.
 # Output: build/out/x87sidecar (arm64, ad-hoc signed), checked against the pinned SHA-256.
@@ -16,7 +17,7 @@ ROOT="$PWD"
 
 SIDECAR_URL="https://github.com/athei/x87sidecar.git"
 SIDECAR_COMMIT="499e0f7e60d2961d379df459dd96bc79ecfe59fd"
-SIDECAR_SHA256="6a37a6937f6b562d376a7009460a1ba276236a72ec2d4278401eb708e796830b"
+SIDECAR_SHA256="f2c298c746d960605ce1ada73b9ac2e687856acc18429b029c780a88845ebfaa"
 
 SRC="$ROOT/build/x87sidecar"
 BUILD="$SRC/build"

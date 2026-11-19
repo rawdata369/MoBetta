@@ -1,0 +1,613 @@
+MoBetta: x87sidecar: Bridge x87 runs across push/pop and mov [m],imm.
+
+Run bridging joins x87 runs across short gaps of mov/lea/flag-dead ALU, but
+not across stack pushes and pops or stores of an immediate. WoW 3.3.5a's
+segment-vs-box test (0x7f9480, 5.8% of the game thread at the Dalaran
+fountain) has `mov; push ebx; push esi; mov`, `push edi; lea; lea` and
+`movl $1,-0x4(%ebp)` between its x87 ops, so each op went one per reply,
+converting its 80-bit slot in and out. In the Dalaran capture, push was the
+biggest blocker of all (5.2% of Wow.exe time at run boundaries).
+
+New bridge shapes, all flag-free (no liveness proof needed):
+- push r / pop r of a 32/64-bit GPR other than ESP/RSP. Rosetta decodes them
+  as push/pop with a 64-bit operand in 64-bit code and pushd/popd with a
+  32-bit operand in 32-bit code; the pairing gives the stack width. Lowered
+  to SUB+STR / LDR+ADD on x4; the 32-bit forms use W arithmetic (ESP wraps
+  at 32 bits) and the 32-bit pop addresses through a W-copy of ESP, since a
+  32-bit guest register's upper half is not guaranteed zero. push/pop esp,
+  16-bit forms and push imm (no operand size) stay with stock.
+- mov m32/m64, imm (BridgeStoreGI). The node keeps mem_operand; the
+  immediate is read from the next operand of the same IRInstr at lowering.
+All three are barriers for load sinking and fence off pass_fma_reduce, like
+the other bridge stores and register writes.
+
+Default X87_BRIDGE_MAX_GAP 2 -> 4 and X87_BRIDGE_MAX_TOTAL 8 -> 16 (both
+already in range): WoW's gaps run 3-4 instructions, and at 2 / 8 the new
+shapes join almost nothing there (offline, Dalaran: +2.9% of Wow.exe time
+at joinable boundaries at gap 2, +9.0% at gap 4, +10.3% at 16).
+
+A memory fault inside a joined region behaves as for any store inside a
+run today (aborts without X87_PRECISE_FAULTS); Wine commits thread stacks
+up front, so a push only faults on a real stack overflow.
+
+Tests: tests/test_bridge_stack.c (push/pop around x87 ops that address
+through the moved RSP, x87 store read back by pop, two pushes and pops,
+pop as the next base, mov [m],imm 32/64/zero/high-bit); suite 1450 passed,
+0 failed, 2 known stock divergences, at both the old and the new defaults.
+MoBetta tests/x87_bridge_stack.c (0x7f9480 instruction for instruction,
+32-bit push/pop/imm mix): bit-identical to stock Rosetta, loop ~595 -> ~530
+ms. Session #28 Dalaran profile: 22.86 -> 21.55 ARM per x87 op. In game at
+the Dalaran fountain: 45-50 FPS vs 40-50 on the previous sidecar.
+
+diff --git a/rosetta_core/include/rosetta_core/Config.h b/rosetta_core/include/rosetta_core/Config.h
+index 3ce9860..3be6882 100644
+--- a/rosetta_core/include/rosetta_core/Config.h
++++ b/rosetta_core/include/rosetta_core/Config.h
+@@ -130,10 +130,10 @@ struct RosettaConfig {
+                                       //                           dead; lowered to non-flag-
+                                       //                           setting ARM.  Requires
+                                       //                           enable_bridge.
+-    uint8_t bridge_max_gap;           // X87_BRIDGE_MAX_GAP        [1,4], default 2: max
++    uint8_t bridge_max_gap;           // X87_BRIDGE_MAX_GAP        [1,4], default 4: max
+                                       //                           consecutive bridge instrs per
+                                       //                           gap.
+-    uint8_t bridge_max_total;         // X87_BRIDGE_MAX_TOTAL      [1,16], default 8: max bridge
++    uint8_t bridge_max_total;         // X87_BRIDGE_MAX_TOTAL      [1,16], default 16: max bridge
+                                       //                           instrs per region.
+     uint8_t log_bridge;               // X87_LOG_BRIDGE            one stderr line per bridged
+                                       //                           compile (hash, counts) and per
+diff --git a/rosetta_core/include/rosetta_core/X87Bridge.h b/rosetta_core/include/rosetta_core/X87Bridge.h
+index 9cdd9e4..681fec9 100644
+--- a/rosetta_core/include/rosetta_core/X87Bridge.h
++++ b/rosetta_core/include/rosetta_core/X87Bridge.h
+@@ -27,8 +27,19 @@
+ // 2026-07-12, so consuming it as a nop is exact).  Excluded: other 8/16-bit
+ // operands (sub-register merge semantics), segment overrides, rep prefixes,
+ // fixup-carrying immediates, absolute-memory operands (need external
+-// fixups), `mov [m],imm` (deferred, easy v1.1), movzx/movsx from memory
+-// (deferred: needs a width field alongside mem_operand).
++// fixups), movzx/movsx from memory (deferred: needs a width field
++// alongside mem_operand).
++//
++// v1.1 (MoBetta 0002): `mov [m],imm` (32/64-bit store of a plain
++// immediate; Rosetta hands the immediate sign-extended to 64 bits), and
++// `push r` / `pop r` of a 32/64-bit GPR other than the stack pointer.
++// Rosetta decodes them as `push`/`pop` with a 64-bit operand in 64-bit code
++// (RSP, 8-byte slots) and as `pushd`/`popd` with a 32-bit operand in 32-bit
++// code (ESP, 4-byte slots, 32-bit wrap; WoW's form), so the opcode and the
++// operand size together give the stack width; any other pairing is left to
++// stock.  `push esp` / `pop esp` (old-value and load-then-overwrite
++// quirks), 16-bit forms and `push imm` (its operand carries no size) stay
++// with stock too.  All three shapes are flag-free: no liveness proof.
+ //
+ // v2 scope: v1 plus the simple flag-WRITING ALU ops add/sub/inc/dec/and/
+ // or/xor, bridgeable only when their written flags are provably dead.
+@@ -95,10 +106,20 @@ inline bool is_bridge_v1(const IRInstr& ins) {
+             return gpr_32_or_64(src) || plain_immediate(src) || mem_32_or_64(src);
+         }
+         if (mem_32_or_64(dst)) {
+-            return gpr_32_or_64(src);
++            return gpr_32_or_64(src) || plain_immediate(src);
+         }
+         return false;
+     }
++    if (op == kOpcodeName_push || op == kOpcodeName_pop || op == kOpcodeName_pushd ||
++        op == kOpcodeName_popd) {
++        // Register 4 is ESP/RSP: excluded (see the v1.1 note above).
++        if (ins.num_operands != 1 || !gpr_32_or_64(ins.operands[0]) ||
++            ins.operands[0].reg.reg.index() == 4) {
++            return false;
++        }
++        const bool wide = op == kOpcodeName_push || op == kOpcodeName_pop;
++        return ins.operands[0].reg.size == (wide ? IROperandSize::S64 : IROperandSize::S32);
++    }
+     if (op == kOpcodeName_lea) {
+         if (ins.num_operands != 2) {
+             return false;
+diff --git a/rosetta_core/include/rosetta_core/X87IR.h b/rosetta_core/include/rosetta_core/X87IR.h
+index 2696343..384f15a 100644
+--- a/rosetta_core/include/rosetta_core/X87IR.h
++++ b/rosetta_core/include/rosetta_core/X87IR.h
+@@ -129,6 +129,16 @@ enum class Op : uint8_t {
+     BridgeAluRI,  // alu r,imm  inputs[0]=enc(dst), inputs[2]=enc(kind), imm_bits=value
+     BridgeAluRM,  // alu r,[m]  inputs[0]=enc(dst), inputs[2]=enc(kind), mem_operand=&src
+     BridgeAluMR,  // alu [m],r  inputs[0]=enc(src), inputs[2]=enc(kind), mem_operand=&dst
++
++    // ── Bridge v1.1 (MoBetta 0002) ──────────────────────────────────────────
++    // Flag-free like v1.  kBridge64 = 64-bit stack (RSP, 8-byte slots);
++    // clear = 32-bit stack (ESP, 4-byte slots, 32-bit wrap).
++    BridgeStoreGI,  // mov [m],imm  mem_operand=&dst; the immediate is read at
++                    //   lowering from the next operand of the same IRInstr
++                    //   (mem_operand[1].branch.value): a 16-byte node has no
++                    //   room for both, and IRInstr outlives the lowering.
++    BridgePush,     // push/pushd r  inputs[0]=enc(src), src != ESP/RSP
++    BridgePop,      // pop/popd r    inputs[0]=enc(dst), dst != ESP/RSP
+ };
+ 
+ // ALU selector for BridgeAlu* nodes; stored in inputs[2] via
+diff --git a/rosetta_core/src/ConfigEnv.cpp b/rosetta_core/src/ConfigEnv.cpp
+index c49df02..813aa71 100644
+--- a/rosetta_core/src/ConfigEnv.cpp
++++ b/rosetta_core/src/ConfigEnv.cpp
+@@ -217,8 +217,11 @@ RosettaConfig load_config_from_env() {
+     // enable_bridge too, and the bridge hash lists bisect v2 regions the
+     // same as v1.
+     cfg.enable_bridge_v2 = env_default_on("X87_BRIDGE_V2");
+-    cfg.bridge_max_gap = 2;
+-    cfg.bridge_max_total = 8;
++    // Gap 4 / total 16 since MoBetta 0002: push/pop and mov [m],imm gaps in
++    // WoW's code run 3-4 instructions (0x7f9480: `mov; push; push; mov`);
++    // at 2 / 8 the new shapes join almost nothing there.
++    cfg.bridge_max_gap = 4;
++    cfg.bridge_max_total = 16;
+     cfg.log_bridge = env_truthy("X87_LOG_BRIDGE") ? 1 : 0;
+     auto parse_bridge_bound = [](const char* env_name, uint8_t& target, long lo, long hi) {
+         const char* t = std::getenv(env_name);
+@@ -569,9 +572,9 @@ void print_env_help(std::FILE* out) {
+         "                                flags Rosetta's own flag_liveness byte\n"
+         "                                proves dead; lowered to non-flag-setting\n"
+         "                                ARM.  Requires X87_ENABLE_BRIDGE.\n"
+-        "  X87_BRIDGE_MAX_GAP=N          [1,4] default 2: max consecutive bridge\n"
++        "  X87_BRIDGE_MAX_GAP=N          [1,4] default 4: max consecutive bridge\n"
+         "                                instructions per gap\n"
+-        "  X87_BRIDGE_MAX_TOTAL=N        [1,16] default 8: max bridge instructions\n"
++        "  X87_BRIDGE_MAX_TOTAL=N        [1,16] default 16: max bridge instructions\n"
+         "                                per bridged region\n"
+         "  X87_LOG_BRIDGE=1              one stderr line per bridged compile/fallback\n"
+         "  X87_BRIDGE_HASH_LIST=H,...    bridge ONLY blocks whose IR-content hash is\n"
+diff --git a/rosetta_core/src/X87IRBuild.cpp b/rosetta_core/src/X87IRBuild.cpp
+index 84f9490..0f00df2 100644
+--- a/rosetta_core/src/X87IRBuild.cpp
++++ b/rosetta_core/src/X87IRBuild.cpp
+@@ -380,8 +380,34 @@ static bool build_bridge(Context& ctx, IRInstr* instr) {
+             ctx.nodes[id].mem_operand = &dst;
+             return true;
+         }
++        if (dst.kind == IROperandKind::MemRef && src.kind == IROperandKind::BranchOffset) {
++            // mov [m],imm: the lowering reads the immediate from &dst + 1.
++            auto id = ctx.add_node(Op::BridgeStoreGI);
++            if (id < 0) {
++                return false;
++            }
++            ctx.nodes[id].flags |= dst.mem.size == IROperandSize::S64 ? kBridge64 : kNone;
++            ctx.nodes[id].mem_operand = &dst;
++            return true;
++        }
+         return false;
+     }
++    if (op == kOpcodeName_push || op == kOpcodeName_pop || op == kOpcodeName_pushd ||
++        op == kOpcodeName_popd) {
++        // Operand size = stack width (X87Bridge.h v1.1; is_bridge_v1 already
++        // matched it to the opcode and refused ESP/RSP).
++        if (dst.kind != IROperandKind::Register || dst.reg.reg.index() == 4) {
++            return false;
++        }
++        const bool is_push = op == kOpcodeName_push || op == kOpcodeName_pushd;
++        auto id = ctx.add_node(is_push ? Op::BridgePush : Op::BridgePop,
++                               bridge_encode_reg(dst.reg.reg.index()));
++        if (id < 0) {
++            return false;
++        }
++        ctx.nodes[id].flags |= width_flag(dst);
++        return true;
++    }
+     if (op == kOpcodeName_lea) {
+         auto id = ctx.add_node(Op::BridgeLea, bridge_encode_reg(dst.reg.reg.index()));
+         if (id < 0) {
+diff --git a/rosetta_core/src/X87IRLower.cpp b/rosetta_core/src/X87IRLower.cpp
+index 8f20c00..e859cca 100644
+--- a/rosetta_core/src/X87IRLower.cpp
++++ b/rosetta_core/src/X87IRLower.cpp
+@@ -1391,6 +1391,64 @@ void lower(Context& ctx, TranslationResult* result) {
+                 break;
+             }
+ 
++            // ── Bridge v1.1 (MoBetta 0002) ─────────────────────────────────
++            case Op::BridgeStoreGI: {
++                // mov [m],imm.  The immediate is the IRInstr operand after
++                // the destination (X87IR.h), sign-extended to 64 bits by
++                // Rosetta; the W-form store keeps its low 32 bits.  Zero
++                // stores the zero register.
++                const int is64 = (n.flags & kBridge64) ? 1 : 0;
++                const uint64_t raw = static_cast<uint64_t>(n.mem_operand[1].branch.value);
++                const uint64_t value = is64 ? raw : (raw & 0xFFFFFFFFULL);
++                const int addr =
++                    compute_operand_address(*result, /*is_64bit=*/true, n.mem_operand, GPR::XZR);
++                int val = GPR::XZR;
++                if (value != 0) {
++                    val = alloc_free_gpr(*result);
++                    emit_load_immediate_no_xzr(*result, is64, value, val);
++                }
++                emit_ldr_str_imm(buf, /*size=*/is64 ? 3 : 2, /*is_fp=*/0, /*STR*/ 0,
++                                 /*imm12=*/0, addr, val);
++                if (val != GPR::XZR) {
++                    free_gpr(*result, val);
++                }
++                free_gpr(*result, addr);
++                break;
++            }
++            case Op::BridgePush: {
++                // push r: ESP/RSP -= slot, then store at the new top.  The
++                // W-form SUB is the 32-bit stack's wrap and also clears
++                // x4's upper half before it is used as an address; src is
++                // never the stack pointer (X87Bridge.h), so the order is
++                // exact.
++                const int is64 = (n.flags & kBridge64) ? 1 : 0;
++                emit_add_imm(buf, is64, /*is_sub=*/1, /*is_set_flags=*/0, /*shift=*/0,
++                             is64 ? 8 : 4, GPR::X4, GPR::X4);
++                emit_ldr_str_imm(buf, /*size=*/is64 ? 3 : 2, /*is_fp=*/0, /*STR*/ 0,
++                                 /*imm12=*/0, GPR::X4, bridge_decode_reg(n.inputs[0]));
++                break;
++            }
++            case Op::BridgePop: {
++                // pop r: load the top, then ESP/RSP += slot (dst is never
++                // the stack pointer, so the add sees the old value).  A
++                // 32-bit guest register's upper half is not guaranteed zero
++                // (compute_mem_operand_address zero-extends a bare base for
++                // the same reason), so the 32-bit form addresses through a
++                // W-copy of ESP in dst, which the load then overwrites.
++                const int is64 = (n.flags & kBridge64) ? 1 : 0;
++                const int dst = bridge_decode_reg(n.inputs[0]);
++                int base = GPR::X4;
++                if (!is64) {
++                    emit_mov_reg(buf, /*is_64bit=*/0, dst, GPR::X4);
++                    base = dst;
++                }
++                emit_ldr_str_imm(buf, /*size=*/is64 ? 3 : 2, /*is_fp=*/0, /*LDR*/ 1,
++                                 /*imm12=*/0, base, dst);
++                emit_add_imm(buf, is64, /*is_sub=*/0, /*is_set_flags=*/0, /*shift=*/0,
++                             is64 ? 8 : 4, GPR::X4, GPR::X4);
++                break;
++            }
++
+             // ── Bridge ALU ops (run bridging v2) ──────────────────────────
+             // Written flags are proven dead (flag_liveness == 0), so every
+             // form lowers to the NON-flag-setting ARM instruction; NZCV is
+@@ -1875,6 +1933,14 @@ int peak_live_gprs(const Context& ctx, int budget, int* first_over_node, bool fa
+             case Op::BridgeStoreG:
+                 transient = 1;
+                 break;
++            // Push/pop address through X4 itself; mov [m],imm holds an
++            // address scratch and an immediate scratch.
++            case Op::BridgePush:
++            case Op::BridgePop:
++                break;
++            case Op::BridgeStoreGI:
++                transient = 2;
++                break;
+ 
+             // Bridge ALU: RR is register-to-register (no scratch); RI may
+             // materialize a wide immediate (1); the memory forms hold an
+@@ -2399,6 +2465,9 @@ static bool remat_relieve_fpr_pressure(Context& ctx, int budget) {
+                         case Op::BridgeAluRI:
+                         case Op::BridgeAluRM:
+                         case Op::BridgeAluMR:
++                        case Op::BridgeStoreGI:
++                        case Op::BridgePush:
++                        case Op::BridgePop:
+                             barrier = true;
+                             break;
+                         default:
+diff --git a/rosetta_core/src/X87IROptimize.cpp b/rosetta_core/src/X87IROptimize.cpp
+index 109b3ca..3e9b8de 100644
+--- a/rosetta_core/src/X87IROptimize.cpp
++++ b/rosetta_core/src/X87IROptimize.cpp
+@@ -131,6 +131,9 @@ static void pass_dse(Context& ctx) {
+             case Op::BridgeAluRI:
+             case Op::BridgeAluRM:
+             case Op::BridgeAluMR:
++            case Op::BridgeStoreGI:
++            case Op::BridgePush:
++            case Op::BridgePop:
+                 continue;
+             default:
+                 break;
+@@ -175,6 +178,9 @@ static void pass_dse(Context& ctx) {
+             case Op::BridgeAluRI:
+             case Op::BridgeAluRM:
+             case Op::BridgeAluMR:
++            case Op::BridgeStoreGI:
++            case Op::BridgePush:
++            case Op::BridgePop:
+                 continue;
+             default:
+                 break;
+@@ -427,6 +433,9 @@ static void pass_fma_reduce(Context& ctx) {
+             case Op::BridgeAluRI:
+             case Op::BridgeAluRM:
+             case Op::BridgeAluMR:
++            case Op::BridgeStoreGI:
++            case Op::BridgePush:
++            case Op::BridgePop:
+                 return;
+             default:
+                 break;
+diff --git a/scripts/run_tests.sh b/scripts/run_tests.sh
+index 43bcf04..07e634f 100755
+--- a/scripts/run_tests.sh
++++ b/scripts/run_tests.sh
+@@ -168,6 +168,7 @@ ALL_TESTS=(
+     test_bridge_flags
+     test_bridge_alu
+     test_bridge_ext
++    test_bridge_stack
+     test_fld_arith_arithp_fma
+     test_readst_elide
+     test_fxch
+@@ -866,6 +867,7 @@ ALLOC_FAIL_TESTS=(
+     test_x87_full
+     test_ir_split
+     test_bridge_alu
++    test_bridge_stack
+     test_fistp_multi
+     test_fist_pressure
+     test_fsincos
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 342d9c4..9ec3434 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -101,6 +101,7 @@ add_x86_sample(test_bridge_lea)
+ add_x86_sample(test_bridge_flags)
+ add_x86_sample(test_bridge_alu)
+ add_x86_sample(test_bridge_ext)
++add_x86_sample(test_bridge_stack)
+ add_x86_sample(test_decoder_fcomp_st)
+ add_x86_sample_lowzero(test_decoder_arpl)
+ add_x86_sample(test_x87_signal_storm)
+diff --git a/tests/test_bridge_stack.c b/tests/test_bridge_stack.c
+new file mode 100644
+index 0000000..1c6f6b8
+--- /dev/null
++++ b/tests/test_bridge_stack.c
+@@ -0,0 +1,236 @@
++/*
++ * test_bridge_stack.c — Run bridging v1.1 (MoBetta 0002): push r / pop r and
++ * mov [m],imm joining x87 segments.
++ *
++ * Checks the FP result, the guest registers the bridges wrote, the memory
++ * they stored, and that the stack pointer comes back where it started.  The
++ * x87 ops between the push and the pop address memory through the stack
++ * pointer, so a lowering that forgot to move it, or moved it by the wrong
++ * slot size, reads the wrong value.  Meaningful under bridging (the default
++ * phases); with X87_ENABLE_BRIDGE=0 the same code checks the unbridged path.
++ *
++ * Each asm block first steps the stack pointer over the red zone, before
++ * its first x87 op, so the pushes cannot clobber the compiler's locals.
++ *
++ * Build: clang -arch x86_64 -O0 -o test_bridge_stack test_bridge_stack.c
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++static int failures = 0;
++static uint64_t as_u64(double d) {
++    uint64_t u;
++    memcpy(&u, &d, 8);
++    return u;
++}
++
++static void check(const char* name, double got, double expected) {
++    if (as_u64(got) != as_u64(expected)) {
++        printf("FAIL  %-55s  got=%.17g  expected=%.17g\n", name, got, expected);
++        failures++;
++    } else {
++        printf("PASS  %s\n", name);
++    }
++}
++
++static void check_u64(const char* name, uint64_t got, uint64_t expected) {
++    if (got != expected) {
++        printf("FAIL  %-55s  got=0x%016llx  expected=0x%016llx\n", name,
++               (unsigned long long)got, (unsigned long long)expected);
++        failures++;
++    } else {
++        printf("PASS  %s\n", name);
++    }
++}
++
++int main(void) {
++    const double a[4] = {1.5, 2.5, -3.25, 4.0};
++
++    /* push r / pop r into another register across two segments. */
++    {
++        double out;
++        uint64_t moved = 0, sp_delta = 1;
++        __asm__ volatile(
++            "movq   %%rsp, %%r8\n\t"
++            "leaq   -128(%%rsp), %%rsp\n\t"
++            "movabsq $0x1122334455667788, %%rbx\n\t"
++            "fldl   (%3)\n\t"
++            "fmull  8(%3)\n\t"
++            "pushq  %%rbx\n\t" /* bridge: push r */
++            "fldl   16(%3)\n\t"
++            "fmull  24(%3)\n\t"
++            "popq   %%rsi\n\t" /* bridge: pop r */
++            "faddp\n\t"
++            "fstpl  (%4)\n\t"
++            "leaq   128(%%rsp), %%rsp\n\t"
++            "movq   %%rsi, %1\n\t"
++            "movq   %%rsp, %%r9\n\t"
++            "subq   %%r8, %%r9\n\t"
++            "movq   %%r9, %2\n\t"
++            : "=m"(out), "=m"(moved), "=m"(sp_delta)
++            : "r"(a), "r"(&out)
++            : "rbx", "rsi", "r8", "r9", "st", "st(1)", "memory");
++        check("push/pop: fp result", out, a[0] * a[1] + a[2] * a[3]);
++        check_u64("push/pop: value moved through the stack", moved, 0x1122334455667788ULL);
++        check_u64("push/pop: stack pointer restored", sp_delta, 0);
++    }
++
++    /* An x87 op reads the slot a bridged push just wrote, via the moved RSP. */
++    {
++        double out;
++        const double two = 2.0;
++        uint64_t popped = 0;
++        __asm__ volatile(
++            "leaq   -128(%%rsp), %%rsp\n\t"
++            "movq   (%2), %%rax\n\t"
++            "fldl   (%3)\n\t"
++            "fmull  8(%3)\n\t"
++            "pushq  %%rax\n\t"  /* bridge: push r */
++            "fmull  (%%rsp)\n\t" /* x87 load from the pushed slot */
++            "fldl   16(%3)\n\t"
++            "faddp\n\t"
++            "popq   %%rcx\n\t" /* bridge: pop r */
++            "fmull  24(%3)\n\t"
++            "fstpl  (%4)\n\t"
++            "leaq   128(%%rsp), %%rsp\n\t"
++            "movq   %%rcx, %1\n\t"
++            : "=m"(out), "=m"(popped)
++            : "r"(&two), "r"(a), "r"(&out)
++            : "rax", "rcx", "st", "st(1)", "memory");
++        check("push then fmul (%rsp): fp result", out, (a[0] * a[1] * 2.0 + a[2]) * a[3]);
++        check_u64("push then fmul (%rsp): popped value", popped, as_u64(2.0));
++    }
++
++    /* x87 store into the pushed slot, read back by the bridged pop. */
++    {
++        double out;
++        uint64_t popped = 0;
++        __asm__ volatile(
++            "leaq   -128(%%rsp), %%rsp\n\t"
++            "xorl   %%edx, %%edx\n\t"
++            "fldl   (%2)\n\t"
++            "fmull  8(%2)\n\t"
++            "pushq  %%rdx\n\t"   /* bridge: push r (slot = 0) */
++            "fstl   (%%rsp)\n\t" /* x87 store into it */
++            "fldl   16(%2)\n\t"
++            "faddp\n\t"
++            "popq   %%rdx\n\t" /* bridge: pop r (reads the fstl) */
++            "fmull  24(%2)\n\t"
++            "fstpl  (%3)\n\t"
++            "leaq   128(%%rsp), %%rsp\n\t"
++            "movq   %%rdx, %1\n\t"
++            : "=m"(out), "=m"(popped)
++            : "r"(a), "r"(&out)
++            : "rdx", "st", "st(1)", "memory");
++        check("fstl (%rsp) then pop: fp result", out, (a[0] * a[1] + a[2]) * a[3]);
++        check_u64("fstl (%rsp) then pop: popped bits", popped, as_u64(a[0] * a[1]));
++    }
++
++    /* Two pushes and two pops (gap of 2 each side), order preserved. */
++    {
++        double out;
++        uint64_t r1 = 0, r2 = 0;
++        __asm__ volatile(
++            "leaq   -128(%%rsp), %%rsp\n\t"
++            "movl   $0x11111111, %%ebx\n\t"
++            "movl   $0x22222222, %%esi\n\t"
++            "fldl   (%3)\n\t"
++            "fmull  8(%3)\n\t"
++            "pushq  %%rbx\n\t"
++            "pushq  %%rsi\n\t"
++            "fldl   16(%3)\n\t"
++            "fmull  24(%3)\n\t"
++            "popq   %%rbx\n\t" /* swapped on purpose */
++            "popq   %%rsi\n\t"
++            "faddp\n\t"
++            "fstpl  (%4)\n\t"
++            "leaq   128(%%rsp), %%rsp\n\t"
++            "movq   %%rbx, %1\n\t"
++            "movq   %%rsi, %2\n\t"
++            : "=m"(out), "=m"(r1), "=m"(r2)
++            : "r"(a), "r"(&out)
++            : "rbx", "rsi", "st", "st(1)", "memory");
++        check("push x2 / pop x2: fp result", out, a[0] * a[1] + a[2] * a[3]);
++        check_u64("push x2 / pop x2: rbx gets the later push", r1, 0x22222222ULL);
++        check_u64("push x2 / pop x2: rsi gets the earlier push", r2, 0x11111111ULL);
++    }
++
++    /* A popped register used as the base of the next x87 load. */
++    {
++        double out;
++        __asm__ volatile(
++            "leaq   -128(%%rsp), %%rsp\n\t"
++            "pushq  %1\n\t" /* outside the run: a's address on the stack */
++            "xorl   %%edi, %%edi\n\t"
++            "fldl   (%1)\n\t"
++            "fmull  8(%1)\n\t"
++            "popq   %%rdi\n\t" /* bridge: pop r */
++            "fldl   16(%%rdi)\n\t"
++            "fmull  24(%%rdi)\n\t"
++            "faddp\n\t"
++            "fstpl  (%2)\n\t"
++            "leaq   128(%%rsp), %%rsp\n\t"
++            : "=m"(out)
++            : "r"(a), "r"(&out)
++            : "rdi", "st", "st(1)", "memory");
++        check("pop as next base: fp result", out, a[0] * a[1] + a[2] * a[3]);
++    }
++
++    /* mov [m],imm: 32-bit, 64-bit sign-extended, zero; then fild reads it. */
++    {
++        double out;
++        uint32_t m32 = 0xdeadbeefU;
++        uint64_t m64 = 0xdeadbeefdeadbeefULL;
++        uint32_t z32 = 0xdeadbeefU;
++        uint64_t z64 = 0xdeadbeefdeadbeefULL;
++        __asm__ volatile(
++            "fldl   (%4)\n\t"
++            "fmull  8(%4)\n\t"
++            "movl   $1000, (%0)\n\t" /* bridge: mov m32,imm */
++            "movq   $-7, (%1)\n\t"   /* bridge: mov m64,imm (sign-extended) */
++            "fildl  (%0)\n\t"
++            "fildll (%1)\n\t"
++            "fmulp\n\t"
++            "faddp\n\t"
++            "movl   $0, (%2)\n\t" /* bridge: mov m32,0 */
++            "movq   $0, (%3)\n\t" /* bridge: mov m64,0 */
++            "fldl   16(%4)\n\t"
++            "faddp\n\t"
++            "fstpl  (%5)\n\t"
++            :
++            : "r"(&m32), "r"(&m64), "r"(&z32), "r"(&z64), "r"(a), "r"(&out)
++            : "st", "st(1)", "memory");
++        check("mov [m],imm: fp result", out, (a[0] * a[1] + 1000.0 * -7.0) + a[2]);
++        check_u64("mov m32,imm: stored", m32, 1000);
++        check_u64("mov m64,imm: stored sign-extended", m64, (uint64_t)-7);
++        check_u64("mov m32,0: stored", z32, 0);
++        check_u64("mov m64,0: stored", z64, 0);
++    }
++
++    /* mov m32,imm with the top bit set: no sign extension into the next word. */
++    {
++        double out;
++        uint32_t m[2] = {0, 0x5a5a5a5aU};
++        __asm__ volatile(
++            "fldl   (%1)\n\t"
++            "fmull  8(%1)\n\t"
++            "movl   $0x80000001, (%0)\n\t" /* bridge: mov m32,imm */
++            "fldl   16(%1)\n\t"
++            "faddp\n\t"
++            "fstpl  (%2)\n\t"
++            :
++            : "r"(m), "r"(a), "r"(&out)
++            : "st", "st(1)", "memory");
++        check("mov m32,imm (high bit): fp result", out, a[0] * a[1] + a[2]);
++        check_u64("mov m32,imm (high bit): stored", m[0], 0x80000001U);
++        check_u64("mov m32,imm (high bit): next word untouched", m[1], 0x5a5a5a5aU);
++    }
++
++    if (failures == 0) {
++        printf("ALL PASS  (0 failures)\n");
++    } else {
++        printf("SOME FAILURES  (%d failures)\n", failures);
++    }
++    return failures == 0 ? 0 : 1;
++}
+diff --git a/tools/profile_analyze.cpp b/tools/profile_analyze.cpp
+index 2b5ea11..6024784 100644
+--- a/tools/profile_analyze.cpp
++++ b/tools/profile_analyze.cpp
+@@ -491,8 +491,8 @@ RosettaConfig make_production_cfg() {
+     cfg.enable_ir_remat = 1;
+     cfg.enable_bridge = 1;
+     cfg.enable_bridge_v2 = 1;
+-    cfg.bridge_max_gap = 2;
+-    cfg.bridge_max_total = 8;
++    cfg.bridge_max_gap = 4;
++    cfg.bridge_max_total = 16;
+     cfg.native_transport = 1;
+     cfg.native_slots = 1;
+     // Rollback knobs default ON too but only matter to Translator's gate
