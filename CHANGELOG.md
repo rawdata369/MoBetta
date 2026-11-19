@@ -2,6 +2,12 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-18 - Dalaran profiled; shader cache measured
+
+### Tested
+- **Where the frames go in Dalaran.** On v1.0.4, windowed at 1563x1010 on a MacBook M3, Dalaran runs at 30-40 FPS and Booty Bay at 70-80. A 15-second profile at the Dalaran fountain shows the game limited by its one main thread running WoW's own x86 code under Rosetta 2: about 87% of that thread's time is in `Wow.exe`, and 27% of it sits on x87 floating-point instructions. Wine and mtld3d barely show up on that thread, and the GPU is only 11-15% busy. So a PC running the game natively on x86 has the edge here, and the remaining room on a Mac is mostly in x87sidecar's translation of that x87 code. Next: profile which of those x87 blocks still miss x87sidecar's fast path. No engine change
+- **mtld3d shader cache.** The cache stays off because mtld3d writes it next to `Wow.exe`, in the game folder. In quiet zones the game compiles 21-91 shaders per session in 40-143 ms in total, mostly in the background, so a cache would not help there. Arriving in Booty Bay and Dalaran compiled 215 shaders in 1.9 s, some in batches of 100-300 ms that hold up a frame. A cache would remove those hitches on later visits but would not raise average FPS. It needs a patch to move the file out of the game folder, planned for a release that also brings an FPS gain
+
 ## 2026-11-18 - HDR retest; false-positive reports sent
 
 ### Tested

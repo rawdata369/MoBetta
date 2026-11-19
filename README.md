@@ -53,6 +53,8 @@ In game with the v1.0.0 engine on a MacBook M3, windowed, medium-high graphics s
 | Booty Bay, rain | 97 |
 | Shattrath City | 86 |
 
+On v1.0.4 (windowed 1563x1010): Booty Bay 70-80, Dalaran 30-40. Dalaran is limited by the game's own main thread under Rosetta 2, not by Wine, mtld3d or the GPU (see [CHANGELOG.md](CHANGELOG.md), 2026-11-18).
+
 <table>
   <tr>
     <td><a href="docs/screenshots/loch-modan.jpg"><img src="docs/screenshots/loch-modan.jpg" alt="Loch Modan, 191 FPS"></a><br>Loch Modan, 191 FPS</td>
