@@ -2,6 +2,14 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-19 - fsin/fcos/fsincos/fptan match the x87 for large arguments (x87sidecar patch 0006)
+
+### Fixed
+- **x87sidecar's `fsin`, `fcos`, `fsincos` and `fptan` now give the x87's results for large arguments** (`patches/x87sidecar/0006`). Before, results went wrong past about 8 million (2^23) and were nonsense past about 10^17: `fsin` of 1e18 gave 4e20 and `fsin` of 1e22 gave -4.24e79. Real x87 hardware reduces the argument by its own 66-bit value of pi, and stock Rosetta copies that exactly, so the x87 answer is not quite the true sine (`fsin` of 1e15 is 7e-7 off it). x87sidecar now does the same: an exact reduction by the x87's pi up to 2^63, and for 2^63 and above `fsin`/`fcos` leave the value unchanged and set the C2 flag, as the x87 does. Under Wine every case in `tests/x87_trig_probe.c`, from 0.7 to just under 2^63, is within 1-2 units in the last place of the x87's answer, as stock Rosetta is, and the out-of-range, infinity and NaN cases match stock Rosetta exactly
+- **Still different from the x87:** `fsincos` and `fptan` of 2^63 and above give NaN (the x87 leaves the value and skips the second result, which x87sidecar cannot do once translated), and `fptan` of infinity or NaN puts 1.0 where the x87 puts NaN, as before. WoW 3.3.5a uses these instructions about 170 times and checks C2 at only two of them
+- **Precision mode:** WoW keeps the 53-bit precision Windows programs run at (it creates its Direct3D device with `D3DCREATE_FPU_PRESERVE`, so Direct3D does not switch it to 24-bit), where x87sidecar's 64-bit doubles match the hardware
+- No measurable cost (a 10-million-instruction benchmark of each within 2%). x87sidecar's test suite, which checks results against stock Rosetta, passes (1498 tests), including a new test of large arguments that failed 60 checks before. At the Dalaran fountain on a MacBook M3: 50-65 FPS with some spikes into the low 70s, nothing odd (0005: a solid 45-65, in an earlier sitting). Not released yet
+
 ## 2026-11-19 - x87 precision note
 
 ### Documentation
