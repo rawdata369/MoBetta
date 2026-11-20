@@ -3,7 +3,8 @@
 # Applies patches/x87sidecar/*.patch in order (0001 bridges x87 runs across flag-dead shifts,
 # 0002 across push/pop and mov [m],imm, 0003 in blocks with all-zero flag liveness,
 # 0004 keeps binary64 x87 slots in a tagged form across replies, 0005 bridges movzx/movsx from
-# 8/16-bit memory and widens the gap limits to 12 / 24).
+# 8/16-bit memory and widens the gap limits to 12 / 24, 0006 reduces fsin/fcos/fsincos/fptan
+# arguments by the x87's 66-bit pi, exactly up to 2^63, with the x87's out-of-range rule).
 #
 # patches/0003 starts i386 processes under it from wine/bin/x87sidecar.
 # Output: build/out/x87sidecar (arm64, ad-hoc signed), checked against the pinned SHA-256.
@@ -19,7 +20,7 @@ ROOT="$PWD"
 
 SIDECAR_URL="https://github.com/athei/x87sidecar.git"
 SIDECAR_COMMIT="499e0f7e60d2961d379df459dd96bc79ecfe59fd"
-SIDECAR_SHA256="47b8d85ee1f9c080ec4f96110fc74e5409d46e24185079dced7d212102e824f1"
+SIDECAR_SHA256="fef5b07ae2ee9e3d8e26baf756eb747dc7f21328b6befa752844a13367dfa25c"
 
 SRC="$ROOT/build/x87sidecar"
 BUILD="$SRC/build"

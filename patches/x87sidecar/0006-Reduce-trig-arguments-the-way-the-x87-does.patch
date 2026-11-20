@@ -1,0 +1,842 @@
+MoBetta: x87sidecar: Reduce fsin/fcos/fsincos/fptan arguments the way the x87 does.
+
+The inline trig polynomials reduced with a 3-step Cody-Waite by true π and
+documented "for |ST(0)| >= 2^23 the result is junk — accepted, no fallback".
+fsin(1e18) gave 4e20, fsin(1e22) -4.24e79, and the x87's out-of-range rule
+(|x| >= 2^63: ST(0) unchanged, C2 = 1) was not followed.  Stock Rosetta gets
+all of it right, and goes further: it reproduces the x87's own reduction by
+π rounded to 66 bits (0xC90FDAA22168C234C·2^-66), so its fsin(1e15) is 7e-7
+from the true sine and 0 from that model.  Real hardware does the same.
+
+- Reduction constant: pi_1 + pi_2 is now the x87's 66-bit π exactly
+  (pi_2 = 0x1.1a6p-53, pi_3 = 0 and no longer emitted; fptan's half-π split
+  likewise).  n·pi_2 is exact for |n| < 2^40, so the fast path reduces by
+  the hardware's π to within rounding for |x| < 2^23.
+- |x| >= 2^23, Inf and NaN leave the fast path through a flag-free guard
+  (FMOV, UBFX, SUB, TBZ on the biased exponent).  2^23 <= |x| < 2^63:
+  Payne-Hanek with a 129-bit window of 2^E/π66 per exponent (40 entries,
+  ph_lo/ph_mid + a bit mask, 664 bytes with the two scale constants, in
+  TranscendentalConstants, which still fits the loader's pad): M·T
+  gives the parity of floor(|x|/π66) at bit 128 and a 64-bit fraction,
+  rounded to nearest, scaled by π66·2^-64 (fptan: 2|x|/π66, π66·2^-66 for
+  its half-angle).  Sign folds into the parity (sin) or the fraction (tan).
+  The ADDS/ADC park the guest NZCV in a pool FPR; GPR use stays at Xconst
+  plus two (Xconst is a scratch there and is rematerialised), FPR peaks
+  unchanged.
+- |x| >= 2^63 finite: fsin/fcos leave ST(0) unchanged and set C2 (C0..C3
+  are now cleared before the body).  fsincos/fptan push at translation
+  time and cannot skip it at run time as the x87 does, so they give the
+  default NaN with C2 = 0; the IR tags fsincos's FSin/FCos (kTrigPaired)
+  to pick that.  Inf: default NaN; NaN: quieted.
+- New tests/test_trig_large.c: 9 arguments from 2^23 to 2^63 - ulp, both
+  signs, against exact rationals over the 66-bit π (8 ULP or 2^-52),
+  in-range C2 clear after fxam, out-of-range unchanged + C2, Inf/NaN.
+  Passes under native Rosetta and the sidecar; 60 failures before.
+
+Under Wine against stock Rosetta (tests/x87_trig_probe.c, MoBetta): every
+fsin/fcos/fsincos/fptan from 0.7 to 2^63 - ulp within 1-2 ULP of the
+x87 model (was off by up to 1e79), out-of-range fsin/fcos and Inf/NaN
+bit-identical to stock.  Left: fsincos/fptan at |x| >= 2^63 (push and C2),
+fptan of Inf/NaN pushes 1.0 where the x87 pushes the NaN (as before).
+
+diff --git a/rosetta_core/include/rosetta_core/TranscendentalHelper.h b/rosetta_core/include/rosetta_core/TranscendentalHelper.h
+index 9db4c5e..4d6e49b 100644
+--- a/rosetta_core/include/rosetta_core/TranscendentalHelper.h
++++ b/rosetta_core/include/rosetta_core/TranscendentalHelper.h
+@@ -15,8 +15,8 @@ struct alignas(8) TranscendentalConstants {
+     // Shared range-reduction constants (sin/cos/sincos/tan use these).
+     double inv_pi;  // 1/π                 0x1.45f306dc9c883p-2
+     double pi_1;    // π high              0x1.921fb54442d18p+1
+-    double pi_2;    // π mid               0x1.1a62633145c06p-53
+-    double pi_3;    // π low               0x1.c1cd129024e09p-106
++    double pi_2;    // π66 - pi_1          0x1.1a6p-53 (the x87's 66-bit π; was true π mid)
++    double pi_3;    // 0 (unused since pi_1 + pi_2 = π66 exactly; was true π low)
+ 
+     // sin polynomial coefficients (Estrin form, c0..c6 in advsimd/sin.c).
+     // Reused by fcos / fsincos: cos.c lists identical c0..c6.
+@@ -100,8 +100,24 @@ struct alignas(8) TranscendentalConstants {
+     double tan_half_pi_lo;   // 0x1.1a62633145c07p-54 = π/2 (low residue)
+     double tan_shift;        // 0x1.8p52  (round-to-nearest shift trick)
+     double tan_poly[9];      // poly[0..8] from optimized-routines tan.c
++
++    // ── Payne-Hanek reduction for 2^23 <= |x| < 2^63 (fsin/fcos/fsincos/fptan) ──
++    // x = M·2^E with M the 53-bit significand, E = biased exp - 1075 in
++    // [-29, 10]; index i = E + 29 = biased exp - 1046.  T_i = floor(2^(E+128)/π66)
++    // mod 2^129 = ph_mid[i]:ph_lo[i] plus bit i of ph_hi as bit 128, so
++    // M·T_i = (x/π66)·2^128 with the parity of floor(x/π66) at bit 128 and a
++    // 64-bit fraction in bits 64..127.  π66 = 0xC90FDAA22168C234C·2^-66 is the
++    // x87's reduction constant, which stock Rosetta reproduces exactly.
++    double ph_pi_2m64;  // π66·2^-64 (scales the signed 64-bit fraction to radians)
++    double ph_pi_2m66;  // π66·2^-66 (fptan: half of (π/2)·2^-64)
++    uint64_t ph_hi;
++    uint64_t ph_lo[40];
++    uint64_t ph_mid[40];
+ };
+ 
++inline constexpr int kPayneHanekMinExp = 1046;  // biased exponent of 2^23
++inline constexpr int kPayneHanekEntries = 40;   // up to biased 1085 (|x| < 2^63)
++
+ void set_transcendental_constants_addr(uint64_t addr);
+ uint64_t get_transcendental_constants_addr();
+ 
+diff --git a/rosetta_core/include/rosetta_core/TranslatorX87Transcendental.hpp b/rosetta_core/include/rosetta_core/TranslatorX87Transcendental.hpp
+index 30c3c70..72258bd 100644
+--- a/rosetta_core/include/rosetta_core/TranslatorX87Transcendental.hpp
++++ b/rosetta_core/include/rosetta_core/TranslatorX87Transcendental.hpp
+@@ -36,9 +36,13 @@ enum class TrigReduceMode : std::uint8_t { Sin, Cos };
+ // pool FPR holding sin(Dx) / cos(Dx), which the caller must free.
+ // Caller keeps ownership of Xconst.  This function neither loads from
+ // nor stores to the x87 stack.  Clearing C0..C3 is the caller's
+-// responsibility (the wrappers below do it).
++// responsibility (the wrappers below do it), and it must come BEFORE the
++// body: with keep_out_of_range a finite |x| >= 2^63 leaves the value
++// unchanged and sets C2 (x87 fsin/fcos); without it (fsincos) such an
++// input gives the default NaN.  2^23 <= |x| < 2^63 reduces exactly
++// (Payne-Hanek).  Xbase addresses the X87State (status word).
+ int emit_inline_trig_body(TranslationResult& a1, AssemblerBuffer& buf, int Dx, int Xconst,
+-                          TrigReduceMode mode);
++                          TrigReduceMode mode, int Xbase, bool keep_out_of_range);
+ 
+ // FPR-level core of fpatan: returns a freshly-owned pool FPR holding
+ // atan2(Dy_in, Dx_in).  Both inputs must be scratch-pool FPRs; the core
+diff --git a/rosetta_core/include/rosetta_core/X87IR.h b/rosetta_core/include/rosetta_core/X87IR.h
+index 360ccf3..7d99434 100644
+--- a/rosetta_core/include/rosetta_core/X87IR.h
++++ b/rosetta_core/include/rosetta_core/X87IR.h
+@@ -179,6 +179,11 @@ enum NodeFlags : uint8_t {
+     kFmaReduceMember = 1 << 5,  // FMAdd / LoadF32 absorbed by a chain (incl. head)
+ 
+     kBridge64 = 1 << 6,  // Bridge*: 64-bit operand width (default 32-bit)
++
++    // FSin/FCos built from fsincos: x87 skips the push for |x| >= 2^63,
++    // which a fixed stack shape cannot follow, so such an input gives the
++    // default NaN instead of keeping the value and setting C2.
++    kTrigPaired = 1 << 7,
+ };
+ 
+ // Guest GPR numbers inside Bridge* nodes' inputs[] — negative so every pass
+diff --git a/rosetta_core/src/TranslatorX87Transcendental.cpp b/rosetta_core/src/TranslatorX87Transcendental.cpp
+index 2d74795..185aa03 100644
+--- a/rosetta_core/src/TranslatorX87Transcendental.cpp
++++ b/rosetta_core/src/TranslatorX87Transcendental.cpp
+@@ -73,8 +73,31 @@ struct ConstOff {
+     static constexpr int TanHalfPiLo = 529;
+     static constexpr int TanShift = 530;
+     static constexpr int TanPoly0 = 531;  // poly[0..8] contiguous → P(i) = 531 + i
++    // Payne-Hanek (after tan_poly[9])
++    static constexpr int PhPi2m64 = 540;
++    static constexpr int PhPi2m66 = 541;
++    static constexpr int PhHi = 542;
++    static constexpr int PhLo = 543;   // ph_lo[40]  → 543..582
++    static constexpr int PhMid = 583;  // ph_mid[40] → 583..622
+ };
+ 
++static_assert(offsetof(rosetta_core::TranscendentalConstants, ph_pi_2m64) ==
++                  ConstOff::PhPi2m64 * std::size_t{8},
++              "ConstOff::PhPi2m64 drift");
++static_assert(offsetof(rosetta_core::TranscendentalConstants, ph_pi_2m66) ==
++                  ConstOff::PhPi2m66 * std::size_t{8},
++              "ConstOff::PhPi2m66 drift");
++static_assert(offsetof(rosetta_core::TranscendentalConstants, ph_hi) ==
++                  ConstOff::PhHi * std::size_t{8},
++              "ConstOff::PhHi drift");
++static_assert(offsetof(rosetta_core::TranscendentalConstants, ph_lo) ==
++                  ConstOff::PhLo * std::size_t{8},
++              "ConstOff::PhLo drift");
++static_assert(offsetof(rosetta_core::TranscendentalConstants, ph_mid) ==
++                  ConstOff::PhMid * std::size_t{8},
++              "ConstOff::PhMid drift");
++static_assert(rosetta_core::kPayneHanekEntries <= 64, "ph_hi holds one bit per entry");
++
+ static_assert(offsetof(rosetta_core::TranscendentalConstants, inv_pi) ==
+                   ConstOff::InvPi * std::size_t{8},
+               "ConstOff::InvPi drift");
+@@ -180,7 +203,7 @@ static_assert(offsetof(rosetta_core::TranscendentalConstants, tan_poly) ==
+ // Cos mode:  n' = round(x * inv_pi + 0.5);        qn = (s64) n'   (pre-offset)
+ //            n  = n' - 0.5
+ //
+-// Both then compute  r = x - n*pi_1 - n*pi_2 - n*pi_3   into Dr.
++// Both then compute  r = x - n*pi_1 - n*pi_2   into Dr (n*pi_2 is exact).
+ //
+ // Caller pre-allocates Dn, Xqn, Dr, Dtmp from the scratch pools and
+ // retains ownership.  On return Dn is dead; Xqn holds the sign-flip
+@@ -208,8 +231,8 @@ void emit_trig_range_reduce(AssemblerBuffer& buf, int Xconst, int Dx, int Dn, in
+     emit_fmsub_f64(buf, Dr, Dn, Dtmp, Dx);  // r  = x - n*pi_1
+     emit_fldr_imm(buf, 3, Dtmp, Xconst, ConstOff::Pi2);
+     emit_fmsub_f64(buf, Dr, Dn, Dtmp, Dr);  // r -= n*pi_2
+-    emit_fldr_imm(buf, 3, Dtmp, Xconst, ConstOff::Pi3);
+-    emit_fmsub_f64(buf, Dr, Dn, Dtmp, Dr);  // r -= n*pi_3
++    // pi_1 + pi_2 is the x87's 66-bit π exactly (pi_3 = 0): the hardware
++    // and stock Rosetta reduce by that value, so n·pi_3 is not emitted.
+ }
+ 
+ // Order-6 Estrin polynomial in r²: y = r + r³ * P(r²) where the
+@@ -281,11 +304,202 @@ void emit_apply_qn_sign(TranslationResult& a1, AssemblerBuffer& buf, int Dy_in,
+     free_gpr(a1, Xy);
+ }
+ 
++// ── Large arguments (MoBetta) ────────────────────────────────────────
++// The 3-step Cody-Waite reduction above is good for |x| < 2^23 only.
++// Real x87 (and stock Rosetta) reduce exactly up to 2^63 and leave ST(0)
++// unchanged with C2 = 1 beyond.  A flag-free guard sends |x| >= 2^23,
++// Inf and NaN to an out-of-line path: an exact Payne-Hanek reduction
++// for |x| < 2^63 (64-bit fixed-point fraction of x/π), else the x87
++// out-of-range result.  The fast path gains four instructions.
++
++// A64 encodings the helper set lacks (checked against clang).
++constexpr uint32_t kA64Umulh = 0x9BC07C00U;   // UMULH Xd, Xn, Xm
++constexpr uint32_t kA64Mul = 0x9B007C00U;     // MUL   Xd, Xn, Xm
++constexpr uint32_t kA64Adds = 0xAB000000U;    // ADDS  Xd, Xn, Xm
++constexpr uint32_t kA64Adc = 0x9A000000U;     // ADC   Xd, Xn, Xm
++constexpr uint32_t kA64Lsrv = 0x9AC02400U;    // LSRV  Xd, Xn, Xm
++constexpr uint32_t kA64And = 0x8A000000U;     // AND   Xd, Xn, Xm
++constexpr uint32_t kA64Add = 0x8B000000U;     // ADD   Xd, Xn, Xm
++constexpr uint32_t kA64AddLsl3 = 0x8B000C00U;   // ADD Xd, Xn, Xm, LSL #3
++constexpr uint32_t kA64AddLsr63 = 0x8B40FC00U;  // ADD Xd, Xn, Xm, LSR #63
++constexpr uint32_t kA64EorLsr63 = 0xCA40FC00U;  // EOR Xd, Xn, Xm, LSR #63
++constexpr uint32_t kA64Eor = 0xCA000000U;     // EOR   Xd, Xn, Xm
++constexpr uint32_t kA64Sub = 0xCB000000U;     // SUB   Xd, Xn, Xm
++
++void a64_rrr(AssemblerBuffer& buf, uint32_t op, int Rd, int Rn, int Rm) {
++    buf.emit(op | (static_cast<uint32_t>(Rm & 31) << 16) | (static_cast<uint32_t>(Rn & 31) << 5) |
++             static_cast<uint32_t>(Rd & 31));
++}
++void a64_sub_imm(AssemblerBuffer& buf, int Rd, int Rn, uint32_t imm12) {  // SUB Xd, Xn, #imm
++    buf.emit(0xD1000000U | ((imm12 & 0xFFFU) << 10) | (static_cast<uint32_t>(Rn & 31) << 5) |
++             static_cast<uint32_t>(Rd & 31));
++}
++void a64_ubfm(AssemblerBuffer& buf, int Rd, int Rn, uint32_t immr, uint32_t imms) {
++    buf.emit(0xD3400000U | ((immr & 63U) << 16) | ((imms & 63U) << 10) |
++             (static_cast<uint32_t>(Rn & 31) << 5) | static_cast<uint32_t>(Rd & 31));
++}
++void a64_lsr(AssemblerBuffer& buf, int Rd, int Rn, uint32_t s) { a64_ubfm(buf, Rd, Rn, s, 63); }
++void a64_lsl(AssemblerBuffer& buf, int Rd, int Rn, uint32_t s) {
++    a64_ubfm(buf, Rd, Rn, (64 - s) & 63U, 63 - s);
++}
++void a64_asr63(AssemblerBuffer& buf, int Rd, int Rn) {  // ASR Xd, Xn, #63
++    buf.emit(0x937FFC00U | (static_cast<uint32_t>(Rn & 31) << 5) | static_cast<uint32_t>(Rd & 31));
++}
++void a64_logical_imm64(AssemblerBuffer& buf, int opc, int Rd, int Rn, uint64_t imm) {
++    LogicalImmEncoding enc{};
++    const bool ok = is_bitmask_immediate(/*is_64bit=*/true, imm, enc);
++    assert(ok && "not a bitmask immediate");
++    (void)ok;
++    emit_logical_imm(buf, /*is_64bit=*/1, opc, enc.N, static_cast<int8_t>(enc.immr),
++                     static_cast<int8_t>(enc.imms), Rn, Rd);
++}
++constexpr int kLogAnd = 0, kLogOrr = 1, kLogEor = 2;
++
++// Forward-branch fixups: point the branch emitted at `at` to buf.end.
++void patch_imm14_here(AssemblerBuffer& buf, uint64_t at) {
++    buf.data[at / 4] |= static_cast<uint32_t>(((buf.end - at) / 4) & 0x3FFFU) << 5;
++}
++void patch_imm19_here(AssemblerBuffer& buf, uint64_t at) {
++    buf.data[at / 4] |= static_cast<uint32_t>(((buf.end - at) / 4) & 0x7FFFFU) << 5;
++}
++void patch_imm26_here(AssemblerBuffer& buf, uint64_t at) {
++    buf.data[at / 4] |= static_cast<uint32_t>((buf.end - at) / 4) & 0x3FFFFFFU;
++}
++
++// Xg := biased exponent of Dx - 1046 (no flags).  Returns the offset of a
++// TBZ taken when Xg >= 0, i.e. |x| >= 2^23, Inf or NaN.
++uint64_t emit_large_arg_guard(AssemblerBuffer& buf, int Dx, int Xg) {
++    emit_fmov_d_to_x(buf, Xg, Dx);
++    a64_ubfm(buf, Xg, Xg, 52, 62);  // UBFX Xg, Xg, #52, #11
++    a64_sub_imm(buf, Xg, Xg, rosetta_core::kPayneHanekMinExp);
++    const uint64_t at = buf.end;
++    emit_tbz(buf, /*TBZ*/ 0, Xg, 63, 0);
++    return at;
++}
++
++enum class PhMode : std::uint8_t { Sin, Cos, Tan };
++
++// Exact reduction for 2^23 <= |x| < 2^63.  Entry: Xg = biased exp - 1046
++// (>= 0).  Returns the offset of a TBZ to the out-of-range path (|x| >=
++// 2^63, Inf, NaN), taken with Xg intact.  Fall-through result:
++//   Sin/Cos: Dr = x - n·π (|Dr| <= π/2), n as emit_trig_range_reduce
++//            picks it; Xq bit 0 = n's parity (Sin: XOR the sign of x)
++//   Tan:     Dr = (x - q·π/2)/2, Xq bit 0 = q's parity
++// The fraction carries 64 bits, so |error| <= ~2^-63 absolute.  Guest
++// NZCV is parked in Dpark around the ADDS/ADC; Xconst is used as a
++// scratch and rematerialised.  Clobbers Xg, Dpark, Dtmp.
++uint64_t emit_payne_hanek(AssemblerBuffer& buf, int Dx, int Xconst, int Xq, int Xg, int Dr,
++                          int Dpark, int Dtmp, PhMode mode) {
++    const uint64_t consts_addr = rosetta_core::get_transcendental_constants_addr();
++    a64_sub_imm(buf, Xq, Xg, rosetta_core::kPayneHanekEntries);
++    const uint64_t huge = buf.end;
++    emit_tbz(buf, /*TBZ*/ 0, Xq, 63, 0);  // index >= 40: |x| >= 2^63, Inf, NaN
++
++    emit_mrs_nzcv(buf, Xq);
++    emit_fmov_x_to_d(buf, Dpark, Xq);
++
++    a64_rrr(buf, kA64AddLsl3, Xconst, Xconst, Xg);                      // &consts + 8·i
++    emit_ldr_str_imm(buf, 3, /*is_fp=*/0, /*LDR*/ 1, ConstOff::PhMid, Xconst, Xq);      // mid
++    emit_ldr_str_imm(buf, 3, /*is_fp=*/0, /*LDR*/ 1, ConstOff::PhLo, Xconst, Xconst);  // lo
++    emit_fmov_x_to_d(buf, Dtmp, Xg);  // park i
++    emit_fmov_d_to_x(buf, Xg, Dx);
++    a64_logical_imm64(buf, kLogAnd, Xg, Xg, 0x000FFFFFFFFFFFFFULL);
++    a64_logical_imm64(buf, kLogOrr, Xg, Xg, 0x0010000000000000ULL);  // M
++    a64_rrr(buf, kA64Umulh, Xconst, Xg, Xconst);  // hi(M·lo)
++    emit_fmov_x_to_d(buf, Dr, Xconst);
++    a64_rrr(buf, kA64Mul, Xconst, Xg, Xq);    // lo(M·mid)
++    a64_rrr(buf, kA64Umulh, Xq, Xg, Xq);      // hi(M·mid)
++    emit_fmov_d_to_x(buf, Xg, Dr);
++    a64_rrr(buf, kA64Adds, Xconst, Xconst, Xg);  // f = bits 64..127
++    a64_rrr(buf, kA64Adc, Xq, Xq, GPR::XZR);     // bit 0 -> bit 128
++    emit_fmov_x_to_d(buf, Dr, Xconst);
++    emit_movz_movk_abs64(buf, Xconst, consts_addr);
++    emit_ldr_str_imm(buf, 3, /*is_fp=*/0, /*LDR*/ 1, ConstOff::PhHi, Xconst, Xconst);
++    emit_fmov_d_to_x(buf, Xg, Dtmp);
++    a64_rrr(buf, kA64Lsrv, Xconst, Xconst, Xg);  // bit 0 = bit 128 of T_i
++    emit_fmov_d_to_x(buf, Xg, Dx);               // bit 0 = M's bit 0
++    a64_rrr(buf, kA64And, Xconst, Xconst, Xg);
++    a64_rrr(buf, kA64Add, Xq, Xq, Xconst);  // bit 0 = parity of floor(|x|/π)
++    emit_fmov_d_to_x(buf, Xconst, Dr);      // f
++    if (mode == PhMode::Cos) {
++        // |x|/π + 1/2: the carry out of f flips the parity.
++        a64_rrr(buf, kA64AddLsr63, Xq, Xq, Xconst);
++        a64_logical_imm64(buf, kLogEor, Xconst, Xconst, 0x8000000000000000ULL);
++    } else if (mode == PhMode::Tan) {
++        // 2|x|/π: the parity is f's top bit, the fraction f << 1.
++        a64_lsr(buf, Xq, Xconst, 63);
++        a64_lsl(buf, Xconst, Xconst, 1);
++    }
++    // Round to nearest: a fraction >= 1/2 bumps n and reads as f - 1 signed.
++    a64_rrr(buf, kA64AddLsr63, Xq, Xq, Xconst);
++    if (mode == PhMode::Sin) {
++        emit_fmov_d_to_x(buf, Xg, Dx);
++        a64_rrr(buf, kA64EorLsr63, Xq, Xq, Xg);  // sin(-x) = -sin(x)
++    } else if (mode == PhMode::Tan) {
++        emit_fmov_d_to_x(buf, Xg, Dx);  // tan(-x) = -tan(x): negate the fraction
++        a64_asr63(buf, Xg, Xg);
++        a64_rrr(buf, kA64Eor, Xconst, Xconst, Xg);
++        a64_rrr(buf, kA64Sub, Xconst, Xconst, Xg);
++    }
++    emit_scvtf_x_to_d(buf, Dr, Xconst);
++    emit_movz_movk_abs64(buf, Xconst, consts_addr);
++    emit_fldr_imm(buf, 3, Dtmp, Xconst,
++                  mode == PhMode::Tan ? ConstOff::PhPi2m66 : ConstOff::PhPi2m64);
++    emit_fmul_f64(buf, Dr, Dr, Dtmp);
++
++    emit_fmov_d_to_x(buf, Xg, Dpark);
++    emit_msr_nzcv(buf, Xg);
++    return huge;
++}
++
++// Out-of-range result into Dres; entry Xg = biased exp - 1046 (>= 40).
++// Finite: `keep` → ST(0) unchanged and C2 = 1 (fsin/fcos), else the
++// default NaN (fsincos/fptan, whose x87 form would also skip the push).
++// Inf: the default NaN.  NaN: quieted.  Every exit is a B to patch.
++void emit_trig_out_of_range(AssemblerBuffer& buf, int Dx, int Xq, int Xg, int Dres, int Xbase,
++                            bool keep, uint64_t exits[3]) {
++    a64_sub_imm(buf, Xq, Xg, 2047 - rosetta_core::kPayneHanekMinExp);
++    const uint64_t special = buf.end;
++    emit_cbz(buf, /*is_64bit=*/1, /*CBZ*/ 0, Xq, 0);
++    if (keep) {
++        static constexpr int16_t kSwImm12 = kX87StatusWordOff / 2;
++        LogicalImmEncoding c2{};
++        is_bitmask_immediate(/*is_64bit=*/false, 0x400U, c2);
++        emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*LDRH*/ 1, kSwImm12, Xbase, Xq);
++        emit_logical_imm(buf, /*is_64bit=*/0, kLogOrr, c2.N, static_cast<int8_t>(c2.immr),
++                         static_cast<int8_t>(c2.imms), Xq, Xq);
++        emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*STRH*/ 0, kSwImm12, Xbase, Xq);
++        emit_fmov_f64(buf, Dres, Dx);
++    } else {
++        emit_movn(buf, 1, /*MOVZ*/ 2, 3, 0xfff8, Xq);  // 0xFFF8000000000000
++        emit_fmov_x_to_d(buf, Dres, Xq);
++    }
++    exits[0] = buf.end;
++    emit_b(buf, 0);
++    patch_imm19_here(buf, special);
++    emit_fmov_d_to_x(buf, Xg, Dx);
++    a64_lsl(buf, Xq, Xg, 12);
++    const uint64_t is_inf = buf.end;
++    emit_cbz(buf, /*is_64bit=*/1, /*CBZ*/ 0, Xq, 0);
++    a64_logical_imm64(buf, kLogOrr, Xg, Xg, 0x0008000000000000ULL);
++    emit_fmov_x_to_d(buf, Dres, Xg);
++    exits[1] = buf.end;
++    emit_b(buf, 0);
++    patch_imm19_here(buf, is_inf);
++    emit_movn(buf, 1, /*MOVZ*/ 2, 3, 0xfff8, Xg);
++    emit_fmov_x_to_d(buf, Dres, Xg);
++    exits[2] = buf.end;
++    emit_b(buf, 0);
++}
++
+ }  // namespace
+ 
+ // Body of fsin/fcos given a pre-loaded Dx and a pre-materialised Xconst.
+-// Runs Cody-Waite reduction in `mode`, evaluates the sin polynomial,
+-// applies the qn sign flip.
++// Runs Cody-Waite reduction in `mode` (Payne-Hanek for |x| >= 2^23),
++// evaluates the sin polynomial, applies the qn sign flip.  Out-of-range
++// arguments skip the polynomial (emit_trig_out_of_range); with
++// keep_out_of_range they leave the value unchanged and set C2, so the
++// caller must clear C0..C3 BEFORE the body.
+ //
+ // Ownership contract (shared by every *_core in this file): the body
+ // TAKES OWNERSHIP of Dx — it frees it right after its last read (end of
+@@ -295,22 +509,40 @@ void emit_apply_qn_sign(TranslationResult& a1, AssemblerBuffer& buf, int Dy_in,
+ // guest-visible registers (v0–v15 = x86 XMM state, v16–v23 = stock
+ // temporaries) are live x86 state and must never be touched — using d0
+ // here clobbered guest xmm0 and corrupted any loop accumulating across
+-// the op.  Peak concurrent pool FPRs: 4 during reduction (Dx,Dn,Dr,Dtmp),
+-// 7 during the polynomial (Dr,Dy + 5) — matches peak_live_fprs().
++// the op.  Peak concurrent pool FPRs: 5 during reduction (Dx,Dn,Dr,Dtmp,
++// Dy), 7 during the polynomial (Dr,Dy + 5) — matches peak_live_fprs().
++// Peak GPRs: Xconst + Xqn + Xg = 3 (the guard's Xg is freed before the
++// sign flip's scratch).
+ int emit_inline_trig_body(TranslationResult& a1, AssemblerBuffer& buf, int Dx, int Xconst,
+-                          TrigReduceMode mode) {
++                          TrigReduceMode mode, int Xbase, bool keep_out_of_range) {
+     // 1. Range reduction → Dr, Xqn.  Last read of Dx.
+     const int Dn = alloc_free_fpr(a1);
+     const int Xqn = alloc_free_gpr(a1);
+     const int Dr = alloc_free_fpr(a1);
+     const int Dtmp = alloc_free_fpr(a1);
++    const int Dy = alloc_free_fpr(a1);
++    const int Xg = alloc_free_gpr(a1);
++    const uint64_t slow = emit_large_arg_guard(buf, Dx, Xg);
+     emit_trig_range_reduce(buf, Xconst, Dx, Dn, Xqn, Dr, Dtmp, mode);
++    const uint64_t fast_done = buf.end;
++    emit_b(buf, 0);
++    patch_imm14_here(buf, slow);
++    const uint64_t huge =
++        emit_payne_hanek(buf, Dx, Xconst, Xqn, Xg, Dr, Dn, Dtmp,
++                         mode == TrigReduceMode::Sin ? PhMode::Sin : PhMode::Cos);
++    const uint64_t slow_done = buf.end;
++    emit_b(buf, 0);
++    patch_imm14_here(buf, huge);
++    uint64_t exits[3];
++    emit_trig_out_of_range(buf, Dx, Xqn, Xg, Dy, Xbase, keep_out_of_range, exits);
++    patch_imm26_here(buf, fast_done);
++    patch_imm26_here(buf, slow_done);
++    free_gpr(a1, Xg);
+     free_fpr(a1, Dtmp);
+     free_fpr(a1, Dn);
+     free_fpr(a1, Dx);
+ 
+     // 2. y = r + r³ · P(r²).
+-    const int Dy = alloc_free_fpr(a1);
+     emit_sin_poly_estrin(a1, buf, Dy, Dr, Xconst);
+     free_fpr(a1, Dr);
+ 
+@@ -318,6 +550,9 @@ int emit_inline_trig_body(TranslationResult& a1, AssemblerBuffer& buf, int Dx, i
+     // reading and writing Dy is safe).
+     emit_apply_qn_sign(a1, buf, Dy, Xqn, /*Dd_out=*/Dy);
+     free_gpr(a1, Xqn);
++    for (const uint64_t e : exits) {
++        patch_imm26_here(buf, e);
++    }
+     return Dy;
+ }
+ 
+@@ -339,7 +574,8 @@ static int emit_inline_sin_or_cos(TranslationResult& a1, AssemblerBuffer& buf, i
+            "transcendental constants not installed; loader should have set address");
+     emit_movz_movk_abs64(buf, Xconst, consts_addr);
+ 
+-    const int Dres = emit_inline_trig_body(a1, buf, Dx, Xconst, mode);
++    const int Dres = emit_inline_trig_body(a1, buf, Dx, Xconst, mode, Xbase,
++                                           /*keep_out_of_range=*/true);
+ 
+     free_gpr(a1, Xconst);
+     return Dres;
+@@ -376,16 +612,14 @@ void emit_clear_x87_cc_bits(TranslationResult& a1, AssemblerBuffer& buf, int Xba
+ 
+ int emit_inline_fsin(TranslationResult& a1, AssemblerBuffer& buf, int Xbase, int Wd_top,
+                      int Wd_tmp) {
+-    const int Dres = emit_inline_sin_or_cos(a1, buf, Xbase, Wd_top, Wd_tmp, TrigReduceMode::Sin);
+-    emit_clear_x87_cc_bits(a1, buf, Xbase);
+-    return Dres;
++    emit_clear_x87_cc_bits(a1, buf, Xbase);  // before: an out-of-range input sets C2
++    return emit_inline_sin_or_cos(a1, buf, Xbase, Wd_top, Wd_tmp, TrigReduceMode::Sin);
+ }
+ 
+ int emit_inline_fcos(TranslationResult& a1, AssemblerBuffer& buf, int Xbase, int Wd_top,
+                      int Wd_tmp) {
+-    const int Dres = emit_inline_sin_or_cos(a1, buf, Xbase, Wd_top, Wd_tmp, TrigReduceMode::Cos);
+-    emit_clear_x87_cc_bits(a1, buf, Xbase);
+-    return Dres;
++    emit_clear_x87_cc_bits(a1, buf, Xbase);  // before: an out-of-range input sets C2
++    return emit_inline_sin_or_cos(a1, buf, Xbase, Wd_top, Wd_tmp, TrigReduceMode::Cos);
+ }
+ 
+ // f2xm1 — replace ST(0) with 2^ST(0) - 1.  Port of optimized-routines'
+@@ -1046,8 +1280,17 @@ int emit_inline_fpatan(TranslationResult& a1, AssemblerBuffer& buf, int Xbase, i
+ // peak-pressure window).  Caller keeps ownership of Xconst.  Does NOT
+ // clear C0..C3; the wrapper does.
+ int emit_inline_fptan_core(TranslationResult& a1, AssemblerBuffer& buf, int Dx_in, int Xconst) {
+-    // 1. q = round(x · 2/π) via FMA shift trick
++    // Registers both reduction paths write (Dr, Xqi) or share as scratch
++    // (Dq, Dpark, Xg) are allocated up front.  Peak during reduction: 6 pool
++    // FPRs (Dx, Dr, Dq, Dpark, Dshift, Dtwopi), GPRs Xconst + Xqi + Xg = 3.
++    const int Xqi = alloc_free_gpr(a1);
++    const int Xg = alloc_free_gpr(a1);
++    const int Dr = alloc_free_fpr(a1);
+     const int Dq = alloc_free_fpr(a1);
++    const int Dpark = alloc_free_fpr(a1);
++    const uint64_t slow = emit_large_arg_guard(buf, Dx_in, Xg);
++
++    // 1. q = round(x · 2/π) via FMA shift trick
+     {
+         const int Dshift = alloc_free_fpr(a1);
+         const int Dtwopi = alloc_free_fpr(a1);
+@@ -1060,11 +1303,9 @@ int emit_inline_fptan_core(TranslationResult& a1, AssemblerBuffer& buf, int Dx_i
+     }
+ 
+     // 3. qi = (s64) Dq
+-    const int Xqi = alloc_free_gpr(a1);
+     emit_fcvtzs(buf, /*ftype=*/1, /*is_64bit_int=*/1, Xqi, Dq);
+ 
+     // 4. r = x - q·half_pi_hi - q·half_pi_lo
+-    const int Dr = alloc_free_fpr(a1);
+     {
+         const int Dtmp = alloc_free_fpr(a1);
+         emit_fldr_imm(buf, 3, Dtmp, Xconst, ConstOff::TanHalfPiHi);
+@@ -1076,7 +1317,27 @@ int emit_inline_fptan_core(TranslationResult& a1, AssemblerBuffer& buf, int Dx_i
+         emit_fmul_f64(buf, Dr, Dr, Dtmp);
+         free_fpr(a1, Dtmp);
+     }
++    const uint64_t fast_done = buf.end;
++    emit_b(buf, 0);
++
++    // |x| >= 2^23: exact reduction; |x| >= 2^63, Inf, NaN: the reduced
++    // argument becomes the NaN result (fptan cannot skip its push), and the
++    // polynomial carries it through.
++    patch_imm14_here(buf, slow);
++    const uint64_t huge = emit_payne_hanek(buf, Dx_in, Xconst, Xqi, Xg, Dr, Dpark, Dq, PhMode::Tan);
++    const uint64_t slow_done = buf.end;
++    emit_b(buf, 0);
++    patch_imm14_here(buf, huge);
++    uint64_t exits[3];
++    emit_trig_out_of_range(buf, Dx_in, Xqi, Xg, Dr, /*Xbase=*/-1, /*keep=*/false, exits);
++    patch_imm26_here(buf, fast_done);
++    patch_imm26_here(buf, slow_done);
++    for (const uint64_t e : exits) {
++        patch_imm26_here(buf, e);
++    }
++    free_fpr(a1, Dpark);
+     free_fpr(a1, Dq);
++    free_gpr(a1, Xg);
+     // Step 4's fmsub was the last read of the input — release it before
+     // the step-6 peak (8 transients fill the pool exactly).
+     free_fpr(a1, Dx_in);
+@@ -1391,8 +1652,12 @@ auto emit_inline_fsincos(TranslationResult& a1, AssemblerBuffer& buf, int Xbase,
+     const int Dx_cos = alloc_free_fpr(a1);
+     emit_fmov_f64(buf, Dx_cos, Dx_sin);
+ 
+-    const int Dsin = emit_inline_trig_body(a1, buf, Dx_sin, Xconst, TrigReduceMode::Sin);
+-    const int Dcos = emit_inline_trig_body(a1, buf, Dx_cos, Xconst, TrigReduceMode::Cos);
++    // fsincos cannot skip its push at run time, so an out-of-range input
++    // gives the default NaN in both slots with C2 = 0 (x87: no push, C2 = 1).
++    const int Dsin = emit_inline_trig_body(a1, buf, Dx_sin, Xconst, TrigReduceMode::Sin, Xbase,
++                                           /*keep_out_of_range=*/false);
++    const int Dcos = emit_inline_trig_body(a1, buf, Dx_cos, Xconst, TrigReduceMode::Cos, Xbase,
++                                           /*keep_out_of_range=*/false);
+ 
+     free_gpr(a1, Xconst);
+ 
+diff --git a/rosetta_core/src/X87IRBuild.cpp b/rosetta_core/src/X87IRBuild.cpp
+index 66d8979..ffe77f9 100644
+--- a/rosetta_core/src/X87IRBuild.cpp
++++ b/rosetta_core/src/X87IRBuild.cpp
+@@ -915,6 +915,8 @@ bool build(Context& ctx, IRInstr* instr_array, int64_t num_instrs, int64_t start
+                     ok = false;
+                     break;
+                 }
++                ctx.nodes[sin_id].flags |= kTrigPaired;
++                ctx.nodes[cos_id].flags |= kTrigPaired;
+                 ctx.slot_val[0] = sin_id;  // replace ST(0) with sin
+                 ctx.push(cos_id);          // push cos → new ST(0) = cos, ST(1) = sin
+                 break;
+diff --git a/rosetta_core/src/X87IRLower.cpp b/rosetta_core/src/X87IRLower.cpp
+index a5f5119..7e15132 100644
+--- a/rosetta_core/src/X87IRLower.cpp
++++ b/rosetta_core/src/X87IRLower.cpp
+@@ -957,15 +957,17 @@ void lower(Context& ctx, TranslationResult* result) {
+                 int Dio = alloc_free_fpr(*result);
+                 emit_fmov_f64(buf, Dio, Dn);
+                 fprs.free_dead_inputs(*result, n, i);
++                // Clear C0..C3 first: an out-of-range fsin/fcos sets C2.
++                TranslatorX87::emit_clear_x87_cc_bits(*result, buf, Xbase);
+                 int Xconst = alloc_free_gpr(*result);
+                 emit_movz_movk_abs64(buf, Xconst,
+                                      rosetta_core::get_transcendental_constants_addr());
+                 int Dres = TranslatorX87::emit_inline_trig_body(
+                     *result, buf, Dio, Xconst,
+                     n.op == Op::FSin ? TranslatorX87::TrigReduceMode::Sin
+-                                     : TranslatorX87::TrigReduceMode::Cos);
++                                     : TranslatorX87::TrigReduceMode::Cos,
++                    Xbase, /*keep_out_of_range=*/(n.flags & kTrigPaired) == 0);
+                 free_gpr(*result, Xconst);
+-                TranslatorX87::emit_clear_x87_cc_bits(*result, buf, Xbase);
+                 fprs.node_fpr[i] = static_cast<int8_t>(Dres);
+                 break;
+             }
+diff --git a/rosetta_loader/src/main.cpp b/rosetta_loader/src/main.cpp
+index 8aa64e6..1c6f61f 100644
+--- a/rosetta_loader/src/main.cpp
++++ b/rosetta_loader/src/main.cpp
+@@ -1970,8 +1970,10 @@ int main(int argc, char* argv[]) try {
+         static constexpr rosetta_core::TranscendentalConstants kTransConstants = {
+             .inv_pi = std::numbers::inv_pi,
+             .pi_1 = std::numbers::pi,
+-            .pi_2 = 0x1.1a62633145c06p-53,
+-            .pi_3 = 0x1.c1cd129024e09p-106,
++            // x87 reduces by π to 66 bits (0xC90FDAA22168C234C·2^-66), as does
++            // stock Rosetta: pi_1 + pi_2 is that value exactly (MoBetta).
++            .pi_2 = 0x1.1a6p-53,
++            .pi_3 = 0.0,
+             .sin_c =
+                 {
+                     -0x1.555555555547bp-3,
+@@ -2242,7 +2244,7 @@ int main(int argc, char* argv[]) try {
+             // fptan polynomial (advsimd/tan.c).
+             .tan_two_over_pi = 0x1.45f306dc9c883p-1,
+             .tan_half_pi_hi = 0x1.921fb54442d18p+0,
+-            .tan_half_pi_lo = 0x1.1a62633145c07p-54,
++            .tan_half_pi_lo = 0x1.1a6p-54,  // with hi: the x87's π/2 exactly
+             .tan_shift = 0x1.8p52,
+             .tan_poly =
+                 {
+@@ -2256,6 +2258,45 @@ int main(int argc, char* argv[]) try {
+                     0x1.289f22964a03cp-11,
+                     0x1.4e4fd14147622p-12,
+                 },
++            // Payne-Hanek table (TranscendentalHelper.h): T_i = floor(2^(i-29+128)/π66)
++            // mod 2^129, π66 = 0xC90FDAA22168C234C·2^-66 (the x87's π), exact rationals.
++            .ph_pi_2m64 = 0x1.921fb54442d18p-63,
++            .ph_pi_2m66 = 0x1.921fb54442d18p-65,
++            .ph_hi = 0x000000a280000000ULL,
++            .ph_lo =
++                {
++                    0x391054a80018af10ULL, 0x7220a95000315e20ULL, 0xe44152a00062bc40ULL,
++                    0xc882a54000c57881ULL, 0x91054a80018af103ULL, 0x220a95000315e206ULL,
++                    0x44152a00062bc40dULL, 0x882a54000c57881bULL, 0x1054a80018af1036ULL,
++                    0x20a95000315e206dULL, 0x4152a00062bc40daULL, 0x82a54000c57881b4ULL,
++                    0x054a80018af10368ULL, 0x0a95000315e206d1ULL, 0x152a00062bc40da2ULL,
++                    0x2a54000c57881b44ULL, 0x54a80018af103689ULL, 0xa95000315e206d13ULL,
++                    0x52a00062bc40da27ULL, 0xa54000c57881b44eULL, 0x4a80018af103689dULL,
++                    0x95000315e206d13bULL, 0x2a00062bc40da276ULL, 0x54000c57881b44edULL,
++                    0xa80018af103689daULL, 0x5000315e206d13b5ULL, 0xa00062bc40da276bULL,
++                    0x4000c57881b44ed7ULL, 0x80018af103689dafULL, 0x000315e206d13b5fULL,
++                    0x00062bc40da276beULL, 0x000c57881b44ed7dULL, 0x0018af103689dafbULL,
++                    0x00315e206d13b5f6ULL, 0x0062bc40da276bedULL, 0x00c57881b44ed7daULL,
++                    0x018af103689dafb5ULL, 0x0315e206d13b5f6aULL, 0x062bc40da276bed4ULL,
++                    0x0c57881b44ed7da9ULL,
++                },
++            .ph_mid =
++                {
++                    0x000000028be60db9ULL, 0x0000000517cc1b72ULL, 0x0000000a2f9836e4ULL,
++                    0x000000145f306dc9ULL, 0x00000028be60db93ULL, 0x000000517cc1b727ULL,
++                    0x000000a2f9836e4eULL, 0x00000145f306dc9cULL, 0x0000028be60db939ULL,
++                    0x00000517cc1b7272ULL, 0x00000a2f9836e4e4ULL, 0x0000145f306dc9c8ULL,
++                    0x000028be60db9391ULL, 0x0000517cc1b72722ULL, 0x0000a2f9836e4e44ULL,
++                    0x000145f306dc9c88ULL, 0x00028be60db93910ULL, 0x000517cc1b727220ULL,
++                    0x000a2f9836e4e441ULL, 0x00145f306dc9c882ULL, 0x0028be60db939105ULL,
++                    0x00517cc1b727220aULL, 0x00a2f9836e4e4415ULL, 0x0145f306dc9c882aULL,
++                    0x028be60db9391054ULL, 0x0517cc1b727220a9ULL, 0x0a2f9836e4e44152ULL,
++                    0x145f306dc9c882a5ULL, 0x28be60db9391054aULL, 0x517cc1b727220a95ULL,
++                    0xa2f9836e4e44152aULL, 0x45f306dc9c882a54ULL, 0x8be60db9391054a8ULL,
++                    0x17cc1b727220a950ULL, 0x2f9836e4e44152a0ULL, 0x5f306dc9c882a540ULL,
++                    0xbe60db9391054a80ULL, 0x7cc1b727220a9500ULL, 0xf9836e4e44152a00ULL,
++                    0xf306dc9c882a5400ULL,
++                },
+         };
+         const uint64_t constsAddr =
+             (padStartAddr + blobs.handler.size() + 0x7) & ~static_cast<uint64_t>(0x7);
+diff --git a/scripts/run_tests.sh b/scripts/run_tests.sh
+index 8bc882f..3538198 100755
+--- a/scripts/run_tests.sh
++++ b/scripts/run_tests.sh
+@@ -216,6 +216,7 @@ ALL_TESTS=(
+     test_fxrstor
+     test_fxsave
+     test_fsin
++    test_trig_large
+     test_x87_loop
+     test_flags_across_x87
+     test_flags_across_vex
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 8c8c35b..3a6fc49 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -26,6 +26,7 @@ add_x86_sample(test_peephole7)
+ add_x86_sample(test_fcom_nzcv)
+ add_x86_sample(test_fxam)
+ add_x86_sample(test_fsin)
++add_x86_sample(test_trig_large)
+ add_x86_sample(test_x87_loop)
+ add_x86_sample(test_flags_across_x87)
+ add_x86_sample(test_flags_across_vex)
+diff --git a/tests/test_trig_large.c b/tests/test_trig_large.c
+new file mode 100644
+index 0000000..c109d84
+--- /dev/null
++++ b/tests/test_trig_large.c
+@@ -0,0 +1,165 @@
++/*
++ * test_trig_large.c — fsin / fcos / fsincos / fptan for |x| >= 2^23 (MoBetta).
++ *
++ * The x87 reduces trig arguments exactly by its 66-bit π
++ * (0xC90FDAA22168C234C·2^-66) for |x| < 2^63; at and beyond 2^63 fsin and
++ * fcos leave ST(0) unchanged and set C2.  Native Rosetta reproduces both.
++ * The inline polynomials once reduced with a 3-step Cody-Waite that falls
++ * apart past 2^23 (fsin(1e18) = 4e20) and ignored the 2^63 rule.
++ *
++ * Expected values: exact reduction by the 66-bit π in rationals, then
++ * libm on the reduced argument (generated offline, MoBetta Session #36).
++ * Tolerance: 8 ULP or 2^-52 absolute (results near zero).
++ */
++#include <math.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++static int failures = 0;
++
++static uint64_t bits(double d) {
++    uint64_t u;
++    memcpy(&u, &d, sizeof(u));
++    return u;
++}
++static double dbl(uint64_t u) {
++    double d;
++    memcpy(&d, &u, sizeof(d));
++    return d;
++}
++
++static void check_close(const char* op, double x, double got, uint64_t want_bits) {
++    const double want = dbl(want_bits);
++    const uint64_t g = bits(got);
++    uint64_t ulp = (g > want_bits) ? g - want_bits : want_bits - g;
++    if ((g >> 63) != (want_bits >> 63)) {
++        ulp = (g & ~(1ULL << 63)) + (want_bits & ~(1ULL << 63));
++    }
++    const int ok = ulp <= 8 || fabs(got - want) <= 0x1p-52;
++    printf("%s  %-8s x=%-24.17g got=0x%016llx want=0x%016llx ulp=%llu\n", ok ? "PASS" : "FAIL",
++           op, x, (unsigned long long)g, (unsigned long long)want_bits, (unsigned long long)ulp);
++    if (!ok) {
++        failures++;
++    }
++}
++
++static void check_bits(const char* name, uint64_t got, uint64_t want) {
++    const int ok = got == want;
++    printf("%s  %-40s got=0x%016llx want=0x%016llx\n", ok ? "PASS" : "FAIL", name,
++           (unsigned long long)got, (unsigned long long)want);
++    if (!ok) {
++        failures++;
++    }
++}
++
++static void check_c2(const char* name, uint16_t sw, int want) {
++    const int c2 = (sw >> 10) & 1;
++    printf("%s  %-40s sw=0x%04x C2=%d (want %d)\n", c2 == want ? "PASS" : "FAIL", name,
++           (unsigned)sw, c2, want);
++    if (c2 != want) {
++        failures++;
++    }
++}
++
++/* fxam first sets C2 = 1 for a normal value, so a stale C2 shows. */
++#define UNARY(NAME, INSN)                                                              \
++    static double NAME(double v, uint16_t* sw) {                                       \
++        double r;                                                                      \
++        uint16_t s;                                                                    \
++        __asm__ volatile("fldl %2\n\tfxam\n\t" INSN "\n\tfnstsw %%ax\n\tmovw %%ax, %1\n\t" \
++                         "fstpl %0\n\t"                                                \
++                         : "=m"(r), "=m"(s)                                            \
++                         : "m"(v)                                                      \
++                         : "ax", "st");                                                \
++        *sw = s;                                                                       \
++        return r;                                                                      \
++    }
++UNARY(do_fsin, "fsin")
++UNARY(do_fcos, "fcos")
++
++static void do_fsincos(double v, double* s, double* c) {
++    __asm__ volatile("fldl %2\n\tfsincos\n\tfstpl %1\n\tfstpl %0\n\t"
++                     : "=m"(*s), "=m"(*c)
++                     : "m"(v)
++                     : "st", "st(1)");
++}
++
++static double do_fptan(double v) {
++    double t, one;
++    __asm__ volatile("fldl %2\n\tfptan\n\tfstpl %1\n\tfstpl %0\n\t"
++                     : "=m"(t), "=m"(one)
++                     : "m"(v)
++                     : "st", "st(1)");
++    return t;
++}
++
++/* A run of several trig ops in one block (the IR path lowers them). */
++static double do_sin_plus_cos(double a, double b) {
++    double r;
++    __asm__ volatile("fldl %1\n\tfsin\n\tfldl %2\n\tfcos\n\tfaddp\n\tfstpl %0\n\t"
++                     : "=m"(r)
++                     : "m"(a), "m"(b)
++                     : "st", "st(1)");
++    return r;
++}
++
++static const struct {
++    double x;
++    uint64_t sin, cos, tan;
++} kCases[] = {
++    {0x1p23, 0x3fdba9f45d1ca715ULL, 0xbfecdb2c9e19e3aaULL, 0xbfdead86dfe19adaULL},
++    {1e7 + 0.25, 0x3fc76ced5e991ca5ULL, 0xbfef75a4a57e703cULL, 0xbfc7d3f36e86998bULL},
++    {-123456789.5, 0xbfedf4f404fe0e02ULL, 0xbfd68090105c4db5ULL, 0x40054cf1f0db8ff8ULL},
++    {1e10, 0xbfdf334c78938de6ULL, 0x3febf098901d6fedULL, 0xbfe1de000f41ed21ULL},
++    {-3.75e12, 0x3fe4025ad0e882ceULL, 0xbfe8f8fdef1adf1bULL, 0xbfe9a3cd301632f9ULL},
++    {1e15, 0x3feb76f71e81bc08ULL, 0xbfe06c1797415982ULL, 0xbffac230e07a4812ULL},
++    {1e18, 0xbfefc526473b316cULL, 0x3fbea1662c6379f5ULL, 0xc0209865c30750a2ULL},
++    {-4.5e18, 0x3fcf21aaf53e4370ULL, 0x3fef0a039658fa4aULL, 0x3fd00c3169f336d2ULL},
++    {0x1.fffffffffffffp+62, 0x3fef984e05a54f44ULL, 0xbfc44d36e751af24ULL, 0xc018e68298f11e21ULL},
++};
++
++int main(void) {
++    uint16_t sw;
++    char name[64];
++    for (unsigned i = 0; i < sizeof kCases / sizeof kCases[0]; i++) {
++        const double x = kCases[i].x;
++        check_close("fsin", x, do_fsin(x, &sw), kCases[i].sin);
++        check_c2("fsin in range clears C2", sw, 0);
++        check_close("fcos", x, do_fcos(x, &sw), kCases[i].cos);
++        check_c2("fcos in range clears C2", sw, 0);
++        double s, c;
++        do_fsincos(x, &s, &c);
++        check_close("fsincos.s", x, s, kCases[i].sin);
++        check_close("fsincos.c", x, c, kCases[i].cos);
++        check_close("fptan", x, do_fptan(x), kCases[i].tan);
++    }
++    check_close("sin+cos", 1e15, do_sin_plus_cos(1e15, 1e15),
++                bits(dbl(kCases[5].sin) + dbl(kCases[5].cos)));
++
++    /* |x| >= 2^63: fsin / fcos leave ST(0) unchanged and set C2. */
++    const double big[] = {0x1p63, -1e22, 1e308};
++    for (unsigned i = 0; i < 3; i++) {
++        snprintf(name, sizeof name, "fsin %g unchanged", big[i]);
++        check_bits(name, bits(do_fsin(big[i], &sw)), bits(big[i]));
++        check_c2("fsin out of range sets C2", sw, 1);
++        snprintf(name, sizeof name, "fcos %g unchanged", big[i]);
++        check_bits(name, bits(do_fcos(big[i], &sw)), bits(big[i]));
++        check_c2("fcos out of range sets C2", sw, 1);
++    }
++
++    /* Inf: invalid, the default NaN, C2 = 0.  NaN: quieted, C2 = 0. */
++    check_bits("fsin inf", bits(do_fsin(INFINITY, &sw)), 0xfff8000000000000ULL);
++    check_c2("fsin inf C2", sw, 0);
++    check_bits("fcos -inf", bits(do_fcos(-INFINITY, &sw)), 0xfff8000000000000ULL);
++    check_c2("fcos -inf C2", sw, 0);
++    check_bits("fsin qnan", bits(do_fsin(dbl(0x7ff8000000000001ULL), &sw)), 0x7ff8000000000001ULL);
++    check_bits("fcos qnan", bits(do_fcos(dbl(0xfff8000000000123ULL), &sw)), 0xfff8000000000123ULL);
++
++    if (failures) {
++        printf("FAILED: %d\n", failures);
++        return 1;
++    }
++    printf("ALL PASS\n");
++    return 0;
++}
