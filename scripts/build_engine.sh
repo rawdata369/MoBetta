@@ -23,7 +23,7 @@ set -e
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-ENGINE_SHA256="3cfda1b14924489d60a4eea70110155c376cc4fcc22898c34f5ede8e10ddd65a"
+ENGINE_SHA256="c9d298230642a6b045526251e12a24e4eb8a8709e16db3d72a2ec3d165b0d409"
 
 CLEAN=
 if [ "$1" = "--clean" ]; then
