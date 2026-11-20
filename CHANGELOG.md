@@ -2,6 +2,11 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-20 - Malware scans of v1.0.5, v1.0.6 and v1.0.7
+
+### Added
+- **`docs/SECURITY_SCANS.md`**: a v1.0.5 - v1.0.7 section. Only four engine files changed after v1.0.4 (`d3d9.dll` in v1.0.5, `x87sidecar` in each release); all four and the source at each tag are 0 detections on VirusTotal. ClamAV finds nothing in the three release archives, the unpacked v1.0.7 engine or the source. Each release archive is flagged by K7AntiVirus alone, with the same generic label as v1.0.4, while no engine flags any file inside it; the K7 report from 2026-11-18 is still pending
+
 ## 2026-11-20 - x87 trig matches the hardware for large arguments (v1.0.7)
 
 ### Changed
