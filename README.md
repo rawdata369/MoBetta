@@ -96,7 +96,7 @@ Chat and character names are blurred in the screenshots.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
-Malware scans of each release (v1.0.4 - v1.0.7), the changed engine files and the source (ClamAV, VirusTotal, with screenshots): [docs/SECURITY_SCANS.md](docs/SECURITY_SCANS.md). False-positive reports for the one-engine flags were sent to the vendors on 2026-11-18.
+Malware scans of each release (v1.0.4 - v1.0.7), the changed engine files and the source (ClamAV, VirusTotal, with screenshots): [docs/SECURITY_SCANS.md](docs/SECURITY_SCANS.md). Rescanned 2026-11-22: K7 and two of Microsoft's flags are gone after our false-positive reports; the remaining and new flags, and the vendors' answers, are listed there.
 
 ## Requirements
 

@@ -2,6 +2,11 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-22 - Malware rescan: K7 and two Microsoft flags gone, new flags on two archives
+
+### Changed
+- **`docs/SECURITY_SCANS.md`**: a "Rescan 2026-11-22" section and a vendor-answers table. Every file flagged before was uploaded to VirusTotal again. K7 confirmed by email that its archive detection is fixed, and it is gone from all four release archives. Microsoft no longer flags `opengl32.so` or `winemac.so`; `ntdll.so` (Microsoft, machine-learning verdict) and `user32.dll` (Cynet) are still flagged, and those reports are still open. New: the v1.0.4 and v1.0.7 archives are now flagged by Avast/AVG and Avira (v1.0.4 also by Cynet) with generic labels, while the v1.0.5 and v1.0.6 archives, with nearly the same files, are clean and no file inside any archive is flagged. False-positive reports for these are being sent
+
 ## 2026-11-20 - Malware scans of v1.0.5, v1.0.6 and v1.0.7
 
 ### Added

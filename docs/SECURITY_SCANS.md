@@ -2,15 +2,44 @@
 
 Scans of each release, the files MoBetta changes in the engine, and the source. Every file is listed by its SHA-256. You can check any hash yourself on [VirusTotal](https://www.virustotal.com) or with `shasum -a 256`.
 
+- [Rescan 2026-11-22](#rescan-2026-11-22): every file flagged before, scanned again; vendor answers
 - [v1.0.5 - v1.0.7](#v105---v107) (scanned 2026-11-20): only the files that changed since v1.0.4
 - [v1.0.4](#v104) (scanned 2026-11-18): the full set, with controls
+
+## Rescan 2026-11-22
+
+Every file that was flagged before was uploaded to VirusTotal again on 2026-11-22 (06:01-06:05 UTC) for a fresh analysis. The v1.0.6 archive shows its 2026-11-21 analysis. K7 [confirmed by email on 2026-11-20](#vendor-answers) that its archive detection is fixed.
+
+- **Cleared:** K7 on every release archive; Microsoft on `opengl32.so` and `winemac.so`.
+- **Still flagged:** `ntdll.so` by Microsoft (now `Trojan:Script/Wacatac.B!ml`, still a machine-learning verdict); `user32.dll` by Cynet.
+- **New:** the v1.0.4 and v1.0.7 release archives are flagged by **Avast, AVG** (`Other:Malware-gen [Trj]`; Avast and AVG share one engine) and **Avira** (`TR/Malware`), and v1.0.4 also by Cynet (`Malicious (score: 99)`; Cynet flagged v1.0.7 on an analysis earlier that day and returned "type unsupported" on the fresh one). These are generic labels on the 184 MB archive. The v1.0.5 and v1.0.6 archives, which contain all but four of the same files, are clean on all four engines, no file inside any archive is flagged by them, and ClamAV found nothing in any file. We believe these are false positives and are reporting them (see [Vendor answers](#vendor-answers)).
+
+| File | SHA-256 | Result (2026-11-22) |
+|---|---|---|
+| [`WS12WineCX26.3_Mobetta.tar.7z`](https://www.virustotal.com/gui/file/c9d298230642a6b045526251e12a24e4eb8a8709e16db3d72a2ec3d165b0d409) (v1.0.7 release) | `c9d298230642a6b045526251e12a24e4eb8a8709e16db3d72a2ec3d165b0d409` | [3 / 43](screenshots/scans/vt-ws12winecx26-3-mobetta-v1-0-7-2026-11-22.png) (Avast, AVG, Avira). K7 clean |
+| [`WS12WineCX26.3_Mobetta.tar.7z`](https://www.virustotal.com/gui/file/3cfda1b14924489d60a4eea70110155c376cc4fcc22898c34f5ede8e10ddd65a) (v1.0.6 release) | `3cfda1b14924489d60a4eea70110155c376cc4fcc22898c34f5ede8e10ddd65a` | [0 / 44](screenshots/scans/vt-ws12winecx26-3-mobetta-v1-0-6-2026-11-22.png) (analysis of 2026-11-21). K7 clean |
+| [`WS12WineCX26.3_Mobetta.tar.7z`](https://www.virustotal.com/gui/file/3a26e3455dd37b99315445333cc446cb03b9fa1b7d6d84aaefd4ddeb4f23008b) (v1.0.5 release) | `3a26e3455dd37b99315445333cc446cb03b9fa1b7d6d84aaefd4ddeb4f23008b` | [0 / 41](screenshots/scans/vt-ws12winecx26-3-mobetta-v1-0-5-2026-11-22.png). K7 clean |
+| [`WS12WineCX26.3_Mobetta.tar.7z`](https://www.virustotal.com/gui/file/2554e0a29294dc5821dd3091c86b67607f78f506ef04988249a389554a2d17b0) (v1.0.4 release) | `2554e0a29294dc5821dd3091c86b67607f78f506ef04988249a389554a2d17b0` | [4 / 43](screenshots/scans/vt-ws12winecx26-3-mobetta-v1-0-4-2026-11-22.png) (Avast, AVG, Avira, Cynet). K7 clean |
+| [`lib/wine/x86_64-unix/ntdll.so`](https://www.virustotal.com/gui/file/91ecefb778c17bfb7d157093c7c4e4ffc6a0e2ba271b63223a84c5ad9995cedf) (v1.0.4-v1.0.7) | `91ecefb778c17bfb7d157093c7c4e4ffc6a0e2ba271b63223a84c5ad9995cedf` | [1 / 63](screenshots/scans/vt-ntdll-so-2026-11-22.png) (Microsoft) |
+| [`lib/wine/x86_64-unix/opengl32.so`](https://www.virustotal.com/gui/file/4d0178eae748a61c61d89c3db67eda31aaf38d7417bcd7fcbf81af71ebf35428) (v1.0.4-v1.0.7) | `4d0178eae748a61c61d89c3db67eda31aaf38d7417bcd7fcbf81af71ebf35428` | [0 / 62](screenshots/scans/vt-opengl32-so-2026-11-22.png) |
+| [`lib/wine/x86_64-unix/winemac.so`](https://www.virustotal.com/gui/file/5f3ec04fb74704a00101fa349857f73ea1593c4a05d57b3cd5fc687537f1f9bc) (v1.0.4-v1.0.7) | `5f3ec04fb74704a00101fa349857f73ea1593c4a05d57b3cd5fc687537f1f9bc` | [0 / 63](screenshots/scans/vt-winemac-so-2026-11-22.png) |
+| [`lib/wine/i386-windows/user32.dll`](https://www.virustotal.com/gui/file/92ba32e4331788582cda984f654446400be7a8b663ff2ba88c4e84c9096084fa) (v1.0.4-v1.0.7) | `92ba32e4331788582cda984f654446400be7a8b663ff2ba88c4e84c9096084fa` | [1 / 71](screenshots/scans/vt-user32-dll-2026-11-22.png) (Cynet) |
+
+### Vendor answers
+
+| Vendor | Report | Answer |
+|---|---|---|
+| K7AntiVirus | email, 2026-11-18 (v1.0.4 archive) | 2026-11-20: "Reported FP is fixed." Confirmed on VirusTotal 2026-11-22: K7 clean on all four release archives |
+| Microsoft | Defender file submission, 2026-11-18 (`ntdll.so`, `opengl32.so`, `winemac.so`) | No answer yet. `opengl32.so` and `winemac.so` are clean on VirusTotal; `ntdll.so` is still flagged |
+| Cynet | email, 2026-11-18 (`user32.dll`) | No answer yet |
+| Avast/AVG, Avira, Cynet | v1.0.4 and v1.0.7 archives | Reports being sent 2026-11-22 |
 
 ## v1.0.5 - v1.0.7
 
 Scanned 2026-11-20. Each release archive was unpacked and hashed file by file against the one before it. Only four engine files changed after v1.0.4: `d3d9.dll` (v1.0.5, shader cache) and `bin/x87sidecar` (v1.0.5, v1.0.6, v1.0.7). The other 4,621 files have the same SHA-256 as in v1.0.4 and are covered by the [v1.0.4 scans](#v104).
 
 - **ClamAV:** nothing found in the three release archives (fully unpacked), the 4,625 files of the unpacked v1.0.7 engine, or the source at each tag.
-- **VirusTotal:** every changed engine file and every source zip: 0 detections. Each release archive: flagged by **K7AntiVirus** alone, with the same generic label as v1.0.4 (`Trojan ( 006e46631 )`), out of 39-44. No engine flags any file inside the archives. The v1.0.4 false-positive report to K7 is still pending (see [Flags](#flags)).
+- **VirusTotal:** every changed engine file and every source zip: 0 detections. Each release archive: flagged by **K7AntiVirus** alone, with the same generic label as v1.0.4 (`Trojan ( 006e46631 )`), out of 39-44. No engine flags any file inside the archives. K7 has since fixed this detection (see [Rescan 2026-11-22](#rescan-2026-11-22)).
 
 | File | SHA-256 | Result |
 |---|---|---|
@@ -87,7 +116,7 @@ Detections / engines that returned a verdict. Click a file for its live report, 
 | `user32.dll` | Cynet | `Malicious (score: 100)` | Cynet's score is a heuristic/ML verdict. 70 other engines, including Microsoft, find nothing. Patch 0005 only shortens the display-mode list WoW sees |
 | `WS12WineCX26.3_Mobetta.tar.7z` | K7AntiVirus | `Trojan ( 006e46631 )` | A generic label on the archive. No engine flags the same file inside it, and ClamAV found nothing in any of its files |
 
-Reports sent 2026-11-18: Microsoft (Defender file submission, analysis pending), Cynet and K7 (by email to their false-positive contacts listed by VirusTotal). Each file will be rescanned on VirusTotal after they answer.
+Reports sent 2026-11-18: Microsoft (Defender file submission), Cynet and K7 (by email to their false-positive contacts listed by VirusTotal). K7 and Microsoft's `opengl32.so` and `winemac.so` flags are gone; for the current state and the new archive flags see [Rescan 2026-11-22](#rescan-2026-11-22).
 
 What the changed code does: emulate x86 instructions Rosetta 2 rejects (ntdll), keep no-exec memory on and start the x87 helper (ntdll), reuse a buffer mapping (opengl32), shorten the resolution list (user32), and fix mouse-look and fullscreen in the Mac display driver (winemac). Nothing is injected into the game and no game file is changed. See the [README](../README.md) and [CHANGELOG](../CHANGELOG.md).
 
