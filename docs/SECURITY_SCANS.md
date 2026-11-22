@@ -32,7 +32,9 @@ Every file that was flagged before was uploaded to VirusTotal again on 2026-11-2
 | K7AntiVirus | email, 2026-11-18 (v1.0.4 archive) | 2026-11-20: "Reported FP is fixed." Confirmed on VirusTotal 2026-11-22: K7 clean on all four release archives |
 | Microsoft | Defender file submission, 2026-11-18 (`ntdll.so`, `opengl32.so`, `winemac.so`) | No answer yet. `opengl32.so` and `winemac.so` are clean on VirusTotal; `ntdll.so` is still flagged |
 | Cynet | email, 2026-11-18 (`user32.dll`) | No answer yet |
-| Avast/AVG, Avira, Cynet | v1.0.4 and v1.0.7 archives | Reports being sent 2026-11-22 |
+| Avast/AVG | email, 2026-11-22 (v1.0.4 and v1.0.7 archives) | No answer yet |
+| Avira | analysis submission (release URL), 2026-11-22 (v1.0.7 archive; v1.0.4 named in the report) | No answer yet |
+| Cynet | email, 2026-11-22 (v1.0.4 and v1.0.7 archives; follows up `user32.dll`) | No answer yet |
 
 ## v1.0.5 - v1.0.7
 
