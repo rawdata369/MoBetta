@@ -2,9 +2,37 @@
 
 Scans of each release, the files MoBetta changes in the engine, and the source. Every file is listed by its SHA-256. You can check any hash yourself on [VirusTotal](https://www.virustotal.com) or with `shasum -a 256`.
 
-- [Rescan 2026-11-22](#rescan-2026-11-22): every file flagged before, scanned again; vendor answers
+- [Rescan 2026-11-23](#rescan-2026-11-23): the files still flagged, scanned again after Gen Digital's answer; vendor answers
+- [Rescan 2026-11-22](#rescan-2026-11-22): every file flagged before, scanned again
 - [v1.0.5 - v1.0.7](#v105---v107) (scanned 2026-11-20): only the files that changed since v1.0.4
 - [v1.0.4](#v104) (scanned 2026-11-18): the full set, with controls
+
+## Rescan 2026-11-23
+
+Gen Digital (Avast, AVG and Avira) answered the archive report on 2026-11-22: "The detection has been disabled." The four files still flagged on 2026-11-22 were uploaded to VirusTotal again on 2026-11-23 (03:09-03:11 UTC).
+
+- **Cleared:** Avast, AVG and Avira on the v1.0.4 and v1.0.7 release archives; Microsoft on `ntdll.so`. No Microsoft detection is left on any MoBetta file.
+- **Still flagged:** Cynet alone, on `user32.dll` and on both archives (`Malicious (score: 99-100)`, a generic score with no named threat). Cynet has not answered the reports of 2026-11-18 or 2026-11-22.
+
+| File | SHA-256 | Result (2026-11-23) |
+|---|---|---|
+| [`WS12WineCX26.3_Mobetta.tar.7z`](https://www.virustotal.com/gui/file/c9d298230642a6b045526251e12a24e4eb8a8709e16db3d72a2ec3d165b0d409) (v1.0.7 release) | `c9d298230642a6b045526251e12a24e4eb8a8709e16db3d72a2ec3d165b0d409` | [1 / 44](screenshots/scans/vt-ws12winecx26-3-mobetta-v1-0-7-2026-11-23.png) (Cynet). Avast, AVG, Avira clean |
+| [`WS12WineCX26.3_Mobetta.tar.7z`](https://www.virustotal.com/gui/file/2554e0a29294dc5821dd3091c86b67607f78f506ef04988249a389554a2d17b0) (v1.0.4 release) | `2554e0a29294dc5821dd3091c86b67607f78f506ef04988249a389554a2d17b0` | [1 / 43](screenshots/scans/vt-ws12winecx26-3-mobetta-v1-0-4-2026-11-23.png) (Cynet). Avast, AVG, Avira clean |
+| [`lib/wine/x86_64-unix/ntdll.so`](https://www.virustotal.com/gui/file/91ecefb778c17bfb7d157093c7c4e4ffc6a0e2ba271b63223a84c5ad9995cedf) (v1.0.4-v1.0.7) | `91ecefb778c17bfb7d157093c7c4e4ffc6a0e2ba271b63223a84c5ad9995cedf` | [0 / 63](screenshots/scans/vt-ntdll-so-2026-11-23.png). Microsoft clean |
+| [`lib/wine/i386-windows/user32.dll`](https://www.virustotal.com/gui/file/92ba32e4331788582cda984f654446400be7a8b663ff2ba88c4e84c9096084fa) (v1.0.4-v1.0.7) | `92ba32e4331788582cda984f654446400be7a8b663ff2ba88c4e84c9096084fa` | [1 / 69](screenshots/scans/vt-user32-dll-2026-11-23.png) (Cynet) |
+
+The v1.0.5 and v1.0.6 archives, `opengl32.so` and `winemac.so` were clean on 2026-11-22 and were not scanned again.
+
+### Vendor answers
+
+| Vendor | Report | Answer |
+|---|---|---|
+| K7AntiVirus | email, 2026-11-18 (v1.0.4 archive) | 2026-11-20: "Reported FP is fixed." Confirmed on VirusTotal 2026-11-22: K7 clean on all four release archives |
+| Microsoft | Defender file submission, 2026-11-18 (`ntdll.so`, `opengl32.so`, `winemac.so`) | No answer. All three files are clean on VirusTotal: `opengl32.so` and `winemac.so` since 2026-11-22, `ntdll.so` since 2026-11-23 |
+| Cynet | email, 2026-11-18 (`user32.dll`) | No answer yet. Still flagged on 2026-11-23 |
+| Avast/AVG | email, 2026-11-22 (v1.0.4 and v1.0.7 archives) | 2026-11-22, Gen Digital Threat Ops: "The detection has been disabled." Confirmed on VirusTotal 2026-11-23: Avast and AVG clean on both archives |
+| Avira | analysis submission (release URL), 2026-11-22 (v1.0.7 archive; v1.0.4 named in the report) | No answer yet. Avira is clean on both archives on VirusTotal since 2026-11-23 (Avira is part of Gen Digital, which answered the Avast/AVG report) |
+| Cynet | email, 2026-11-22 (v1.0.4 and v1.0.7 archives; follows up `user32.dll`) | No answer yet. Both archives still flagged on 2026-11-23 |
 
 ## Rescan 2026-11-22
 
@@ -24,17 +52,6 @@ Every file that was flagged before was uploaded to VirusTotal again on 2026-11-2
 | [`lib/wine/x86_64-unix/opengl32.so`](https://www.virustotal.com/gui/file/4d0178eae748a61c61d89c3db67eda31aaf38d7417bcd7fcbf81af71ebf35428) (v1.0.4-v1.0.7) | `4d0178eae748a61c61d89c3db67eda31aaf38d7417bcd7fcbf81af71ebf35428` | [0 / 62](screenshots/scans/vt-opengl32-so-2026-11-22.png) |
 | [`lib/wine/x86_64-unix/winemac.so`](https://www.virustotal.com/gui/file/5f3ec04fb74704a00101fa349857f73ea1593c4a05d57b3cd5fc687537f1f9bc) (v1.0.4-v1.0.7) | `5f3ec04fb74704a00101fa349857f73ea1593c4a05d57b3cd5fc687537f1f9bc` | [0 / 63](screenshots/scans/vt-winemac-so-2026-11-22.png) |
 | [`lib/wine/i386-windows/user32.dll`](https://www.virustotal.com/gui/file/92ba32e4331788582cda984f654446400be7a8b663ff2ba88c4e84c9096084fa) (v1.0.4-v1.0.7) | `92ba32e4331788582cda984f654446400be7a8b663ff2ba88c4e84c9096084fa` | [1 / 71](screenshots/scans/vt-user32-dll-2026-11-22.png) (Cynet) |
-
-### Vendor answers
-
-| Vendor | Report | Answer |
-|---|---|---|
-| K7AntiVirus | email, 2026-11-18 (v1.0.4 archive) | 2026-11-20: "Reported FP is fixed." Confirmed on VirusTotal 2026-11-22: K7 clean on all four release archives |
-| Microsoft | Defender file submission, 2026-11-18 (`ntdll.so`, `opengl32.so`, `winemac.so`) | No answer yet. `opengl32.so` and `winemac.so` are clean on VirusTotal; `ntdll.so` is still flagged |
-| Cynet | email, 2026-11-18 (`user32.dll`) | No answer yet |
-| Avast/AVG | email, 2026-11-22 (v1.0.4 and v1.0.7 archives) | No answer yet |
-| Avira | analysis submission (release URL), 2026-11-22 (v1.0.7 archive; v1.0.4 named in the report) | No answer yet |
-| Cynet | email, 2026-11-22 (v1.0.4 and v1.0.7 archives; follows up `user32.dll`) | No answer yet |
 
 ## v1.0.5 - v1.0.7
 

@@ -2,6 +2,11 @@
 
 All notable changes to MoBetta, newest first. Dates are YYYY-MM-DD.
 
+## 2026-11-23 - Malware rescan: Avast, AVG, Avira and Microsoft flags gone; only Cynet left
+
+### Changed
+- **`docs/SECURITY_SCANS.md`**: a "Rescan 2026-11-23" section; the vendor-answers table moves into it. Gen Digital (Avast, AVG, Avira) answered our report: "The detection has been disabled." On a fresh VirusTotal upload Avast, AVG and Avira are clean on the v1.0.4 and v1.0.7 archives, and Microsoft no longer flags `ntdll.so`, so no Microsoft detection is left on any MoBetta file. Cynet alone still flags `user32.dll` and the two archives (a generic score, no named threat); it has not answered yet
+
 ## 2026-11-22 - Malware rescan: K7 and two Microsoft flags gone, new flags on two archives
 
 ### Changed
