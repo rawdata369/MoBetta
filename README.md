@@ -96,7 +96,7 @@ Chat and character names are blurred in the screenshots.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
-Malware scans of each release (v1.0.4 - v1.0.7), the changed engine files and the source (ClamAV, VirusTotal, with screenshots): [docs/SECURITY_SCANS.md](docs/SECURITY_SCANS.md). Rescanned 2026-11-23: after our false-positive reports, K7, Avast, AVG, Avira and Microsoft no longer flag any MoBetta file. One engine, Cynet, still flags `user32.dll` and two release archives with a generic score; that report is open, and the vendors' answers are listed there.
+Malware scans of the current release (v1.0.7), every engine file MoBetta changes and the source (ClamAV, VirusTotal, with screenshots): [docs/SECURITY_SCANS.md](docs/SECURITY_SCANS.md). After our false-positive reports, K7, Avast, AVG, Avira and Microsoft no longer flag any MoBetta file. One engine, Cynet, still flags `user32.dll` and the release archive with a generic score; that report is open.
 
 ## Requirements
 
